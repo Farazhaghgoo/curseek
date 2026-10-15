@@ -127,7 +127,15 @@ export type ServerMsg =
   | { t: 'pong'; c: number; s: number }
   | { t: 'error'; code: ErrorCode; msg: string };
 
-export type ErrorCode = 'not-found' | 'full' | 'busy' | 'bad-request' | 'expired' | 'replaced' | 'kicked';
+export type ErrorCode =
+  | 'not-found'
+  | 'full'
+  | 'busy'
+  | 'bad-request'
+  | 'expired'
+  | 'replaced'
+  | 'kicked'
+  | 'shutdown';
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const isInt = (v: unknown): v is number => Number.isSafeInteger(v);

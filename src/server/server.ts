@@ -53,8 +53,17 @@ const newToken = () => randomBytes(18).toString('base64url');
 export async function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
   const log = opts.log ?? (() => {});
   const limits = { ...DEFAULT_LIMITS, ...opts.limits };
-  const http = createServer(createStaticHandler(findPublicDir()));
   const rooms = new Map<string, GameRoom>();
+  const serveStatic = createStaticHandler(findPublicDir());
+  const http = createServer((req, res) => {
+    // For load balancers and container health checks.
+    if (req.url === '/healthz') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: true, rooms: rooms.size, connections: wss.clients.size }));
+      return;
+    }
+    void serveStatic(req, res);
+  });
   const perAddress = new Map<string, number>();
 
   const addressOf = (req: IncomingMessage): string => {
@@ -239,6 +248,17 @@ export async function startServer(opts: ServerOptions = {}): Promise<RunningServ
     roomCount: () => rooms.size,
     close: async () => {
       clearInterval(loop);
+      // Tell players why the game ended, so their clients do not try to rejoin rooms that are gone.
+      const notice: ServerMsg = {
+        t: 'error',
+        code: 'shutdown',
+        msg: 'The server restarted, so this game has ended. Start or join a new room.',
+      };
+      for (const client of wss.clients) {
+        if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(notice));
+        client.close(1012, 'Server restarting');
+      }
+      for (let i = 0; i < 25 && wss.clients.size > 0; i++) await new Promise((r) => setTimeout(r, 20));
       for (const client of wss.clients) client.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve) => http.close(() => resolve()));

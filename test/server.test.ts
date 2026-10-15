@@ -94,6 +94,24 @@ test('serves the game page', async () => {
   assert.match(await res.text(), /curseek/);
 });
 
+test('reports its health for load balancers', async () => {
+  const res = await fetch(`http://localhost:${server.port}/healthz`);
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { ok: boolean; rooms: number };
+  assert.equal(body.ok, true);
+  assert.equal(typeof body.rooms, 'number');
+});
+
+test('shutting down tells players their game has ended', async () => {
+  const temp = await startServer({ port: 0 });
+  const c = await Client.connect({ port: temp.port });
+  c.send({ t: 'create', name: 'Ann' });
+  await c.next('welcome');
+  await temp.close();
+  assert.equal((await c.next('error')).code, 'shutdown');
+  await c.closed;
+});
+
 test('two players join by code and complete a round with matching results', async () => {
   const { code, clients } = await makeRoom(['Ann', 'Bob']);
   assert.match(code, /^[A-Z2-9]{4}$/);
