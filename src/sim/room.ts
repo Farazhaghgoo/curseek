@@ -188,6 +188,8 @@ export class GameRoom {
     sink.send(this.welcomeMsg(p));
     sink.send(this.roomMsg());
     if (this.maze && p.inRound) sink.send(this.roundMsg(p, this.maze.toData()));
+    // The latest state straight away, so the client knows the server clock before it draws.
+    this.sendSnapshots(this.clock(), p);
     if (this.phase === 'ended' && this.lastEnd) sink.send(this.lastEnd);
     return p.id;
   }
@@ -624,7 +626,8 @@ export class GameRoom {
     return msg;
   }
 
-  private sendSnapshots(now: number): void {
+  /** Sends every player (or only `to`) the state they are allowed to see. */
+  private sendSnapshots(now: number, to?: Player): void {
     const maze = this.maze;
     if (!maze) return;
     const participants = [...this.players.values()].filter((p) => p.inRound);
@@ -634,7 +637,7 @@ export class GameRoom {
     const entity = (q: Player): EntityState => ({ i: q.id, x: round2(q.pos.x), y: round2(q.pos.y) });
 
     for (const p of this.players.values()) {
-      if (!p.sink) continue;
+      if (!p.sink || (to && p !== to)) continue;
       const o: EntityState[] = [];
       const msg: ServerMsg = { t: 'snap', st: now, ph: this.phase, pe: this.phaseEnd, alive, total: hiders.length, o };
       if (p.inRound) {

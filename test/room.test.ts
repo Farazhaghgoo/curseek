@@ -287,6 +287,9 @@ test('a player who reconnects in time keeps their id, host role, role and positi
   assert.equal(round.seekerId, seeker);
   assert.deepEqual(round.you, spot, 'back where they were, not at a new spawn');
   assert.equal(round.caught, undefined);
+  const snap = back.last('snap')!;
+  assert.equal(snap.ph, 'hunt', 'the latest state comes straight away');
+  assert.deepEqual({ x: snap.you!.x, y: snap.you!.y }, spot);
 
   // The new connection numbers its inputs from 1 again.
   h.room.handle(ann.id, { t: 'input', r: 1, s: 1, x: MAX_STEP, y: 0 });
