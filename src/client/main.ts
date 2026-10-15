@@ -76,6 +76,7 @@ ui.onStart = () => {
 ui.onAddBot = () => session?.send({ t: 'addBot' });
 ui.onRemoveBot = () => session?.send({ t: 'removeBot' });
 ui.onKick = (id) => session?.send({ t: 'kick', id });
+ui.onSettings = (settings) => session?.send({ t: 'settings', ...settings });
 ui.onLeave = () => leave();
 ui.onToggleSound = () => ui.setSound(sound.toggle());
 
@@ -200,6 +201,7 @@ const listener: SessionListener = {
         canStart: s.players.length >= MIN_PLAYERS,
         canAddBot: s.players.length < MAX_PLAYERS,
         canRemoveBot: bots > 0,
+        settings: s.settings,
       });
     } else {
       ui.hideLobby();

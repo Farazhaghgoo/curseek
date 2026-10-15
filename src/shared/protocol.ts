@@ -21,7 +21,22 @@ export type ClientMsg =
   /** Leaves for good. Just closing the connection holds the place for a while instead. */
   | { t: 'leave' }
   /** Host only: removes a player from the room. */
-  | { t: 'kick'; id: string };
+  | { t: 'kick'; id: string }
+  /** Host only, in the lobby: changes the round settings. */
+  | ({ t: 'settings' } & RoomSettings);
+
+/** Round settings the host can choose, in seconds. */
+export interface RoomSettings {
+  hunt: number;
+  hints: number;
+  reveal: number;
+}
+
+export const SETTING_CHOICES: { [K in keyof RoomSettings]: readonly number[] } = {
+  hunt: [60, 90, 120, 180],
+  hints: [8, 12, 20],
+  reveal: [2, 3, 5],
+};
 
 export interface PlayerInfo {
   id: string;
@@ -58,7 +73,14 @@ export type ServerMsg =
       /** Takes back this place after a reload or a dropped connection (multiplayer only). */
       token?: string;
     }
-  | { t: 'room'; code: string; hostId: string | null; status: 'lobby' | 'playing'; players: PlayerInfo[] }
+  | {
+      t: 'room';
+      code: string;
+      hostId: string | null;
+      status: 'lobby' | 'playing';
+      players: PlayerInfo[];
+      settings: RoomSettings;
+    }
   | {
       t: 'round';
       n: number;
@@ -127,6 +149,13 @@ export function parseClientMsg(data: unknown): ClientMsg | null {
         : null;
     case 'kick':
       return typeof m.id === 'string' && m.id.length <= 16 ? { t: 'kick', id: m.id } : null;
+    case 'settings': {
+      const { hunt, hints, reveal } = m;
+      const ok = (v: unknown, choices: readonly number[]) => typeof v === 'number' && choices.includes(v);
+      return ok(hunt, SETTING_CHOICES.hunt) && ok(hints, SETTING_CHOICES.hints) && ok(reveal, SETTING_CHOICES.reveal)
+        ? { t: 'settings', hunt: hunt as number, hints: hints as number, reveal: reveal as number }
+        : null;
+    }
     case 'start':
     case 'addBot':
     case 'removeBot':

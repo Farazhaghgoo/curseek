@@ -255,6 +255,14 @@ export class GameRoom {
       case 'kick':
         if (id === this.hostId && msg.id !== id) this.kick(msg.id);
         break;
+      case 'settings':
+        if (id === this.hostId && this.phase === 'lobby') {
+          this.timings.huntMs = msg.hunt * 1000;
+          this.timings.hintEveryMs = msg.hints * 1000;
+          this.timings.revealMs = msg.reveal * 1000;
+          this.broadcastRoom();
+        }
+        break;
       default:
         break;
     }
@@ -678,7 +686,9 @@ export class GameRoom {
         away: p.awayAt !== null,
         score: p.score,
       }));
-    return { t: 'room', code: this.code, hostId: this.hostId, status: this.status, players };
+    const t = this.timings;
+    const settings = { hunt: t.huntMs / 1000, hints: t.hintEveryMs / 1000, reveal: t.revealMs / 1000 };
+    return { t: 'room', code: this.code, hostId: this.hostId, status: this.status, players, settings };
   }
 
   private broadcastRoom(): void {

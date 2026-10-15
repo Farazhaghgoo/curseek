@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MAX_SPEED, MAX_STEP, VIEW_RADIUS } from '../src/shared/constants';
 import type { Maze } from '../src/shared/maze';
+import { parseClientMsg } from '../src/shared/protocol';
 import { Harness, Inbox } from './helpers';
 
 function startGame(names = ['Ann', 'Bob']) {
@@ -41,6 +42,23 @@ test('first player hosts; only the host can start and needs two players', () => 
   h.room.handle(a.id, { t: 'start' });
   assert.equal(h.room.currentPhase, 'reveal');
   assert.equal(a.inbox.last('room')!.hostId, a.id);
+});
+
+test('the host chooses the round settings in the lobby', () => {
+  const h = new Harness();
+  const a = h.join('Ann');
+  const b = h.join('Bob');
+  assert.deepEqual(a.inbox.last('room')!.settings, { hunt: 90, hints: 12, reveal: 3 });
+  h.room.handle(b.id, { t: 'settings', hunt: 60, hints: 8, reveal: 2 });
+  assert.equal(h.room.timings.huntMs, 90_000, 'only the host');
+  h.room.handle(a.id, { t: 'settings', hunt: 120, hints: 20, reveal: 5 });
+  assert.deepEqual(b.inbox.last('room')!.settings, { hunt: 120, hints: 20, reveal: 5 });
+
+  h.room.handle(a.id, { t: 'start' });
+  assert.deepEqual(b.inbox.last('round')!.timings, { reveal: 5000, fade: 2000, hunt: 120_000 });
+  h.room.handle(a.id, { t: 'settings', hunt: 60, hints: 8, reveal: 2 });
+  assert.equal(h.room.timings.huntMs, 120_000, 'not in the middle of a round');
+  assert.equal(parseClientMsg({ t: 'settings', hunt: 61, hints: 8, reveal: 2 }), null, 'only the offered choices');
 });
 
 test('round messages carry only your own spawn', () => {

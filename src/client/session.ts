@@ -4,7 +4,7 @@
 import type { Vec } from '../shared/geometry';
 import { Maze } from '../shared/maze';
 import { clampStep, moveCircle } from '../shared/physics';
-import type { ClientMsg, EntityState, Phase, PlayerInfo, RoundTimings, ServerMsg } from '../shared/protocol';
+import type { ClientMsg, EntityState, Phase, PlayerInfo, RoomSettings, RoundTimings, ServerMsg } from '../shared/protocol';
 import type { Transport } from './transport';
 
 export type EndInfo = Extract<ServerMsg, { t: 'end' }>;
@@ -52,6 +52,7 @@ export class Session {
   hostId: string | null = null;
   status: 'lobby' | 'playing' = 'lobby';
   players: PlayerInfo[] = [];
+  settings: RoomSettings = { hunt: 90, hints: 12, reveal: 3 };
 
   round = 0;
   maze: Maze | null = null;
@@ -206,6 +207,7 @@ export class Session {
         this.hostId = msg.hostId;
         this.status = msg.status;
         this.players = msg.players;
+        this.settings = msg.settings;
         if (msg.status === 'lobby') {
           this.serverPhase = 'lobby';
           this.maze = null;

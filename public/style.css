@@ -48,7 +48,8 @@ body.in-game canvas#view {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
   color: inherit;
 }
@@ -88,6 +89,7 @@ button.link {
 
 button:focus-visible,
 input:focus-visible,
+select:focus-visible,
 summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -268,6 +270,36 @@ kbd {
 
 .players li.away {
   opacity: 0.55;
+}
+
+.settings {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.settings label {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 0.25rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.settings select {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.4rem 0.45rem;
+}
+
+.settings select:disabled {
+  opacity: 0.75;
+}
+
+.settings option {
+  background: #0b0f1a;
 }
 
 .players .score {

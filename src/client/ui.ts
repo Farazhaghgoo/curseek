@@ -1,7 +1,7 @@
 // DOM overlays: landing screen, lobby, HUD, banner, prompts, toasts and round results.
 // Player names are always inserted as text, never as HTML.
 
-import type { PlayerInfo } from '../shared/protocol';
+import { SETTING_CHOICES, type PlayerInfo, type RoomSettings } from '../shared/protocol';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -23,6 +23,7 @@ export interface LobbyView {
   canStart: boolean;
   canAddBot: boolean;
   canRemoveBot: boolean;
+  settings: RoomSettings;
 }
 
 export interface ResultLine {
@@ -49,6 +50,7 @@ export class Ui {
   onAddBot: () => void = () => {};
   onRemoveBot: () => void = () => {};
   onKick: (id: string) => void = () => {};
+  onSettings: (settings: RoomSettings) => void = () => {};
   onLeave: () => void = () => {};
   onToggleSound: () => void = () => {};
 
@@ -62,6 +64,11 @@ export class Ui {
   private readonly soundBtn = $<HTMLButtonElement>('btn-sound');
   private readonly leaveBtn = $<HTMLButtonElement>('btn-leave');
   private readonly landingError = $('landing-error');
+  private readonly settingSelects = {
+    hunt: $<HTMLSelectElement>('set-hunt'),
+    hints: $<HTMLSelectElement>('set-hints'),
+    reveal: $<HTMLSelectElement>('set-reveal'),
+  };
   private lastHud = '';
 
   constructor() {
@@ -85,6 +92,11 @@ export class Ui {
     this.leaveBtn.addEventListener('click', () => this.onLeave());
     this.soundBtn.addEventListener('click', () => this.onToggleSound());
     $('btn-copy').addEventListener('click', () => this.copyInvite());
+    for (const key of SETTING_KEYS) {
+      const select = this.settingSelects[key];
+      select.append(...SETTING_CHOICES[key].map((n) => new Option(`${n} s`, String(n))));
+      select.addEventListener('change', () => this.onSettings(this.readSettings()));
+    }
   }
 
   showLanding(error = ''): void {
@@ -146,6 +158,13 @@ export class Ui {
       }),
     );
     for (const el of this.lobby.querySelectorAll<HTMLElement>('.host-only')) el.hidden = !v.isHost;
+    for (const key of SETTING_KEYS) {
+      const select = this.settingSelects[key];
+      const value = String(v.settings[key]);
+      if (![...select.options].some((o) => o.value === value)) select.append(new Option(`${value} s`, value));
+      select.value = value;
+      select.disabled = !v.isHost;
+    }
     $<HTMLButtonElement>('btn-start').disabled = !v.canStart;
     $<HTMLButtonElement>('btn-add-bot').disabled = !v.canAddBot;
     $<HTMLButtonElement>('btn-remove-bot').disabled = !v.canRemoveBot;
@@ -249,6 +268,11 @@ export class Ui {
     this.soundBtn.title = on ? 'Sound on (M)' : 'Sound off (M)';
   }
 
+  private readSettings(): RoomSettings {
+    const s = this.settingSelects;
+    return { hunt: Number(s.hunt.value), hints: Number(s.hints.value), reveal: Number(s.reveal.value) };
+  }
+
   private async copyInvite(): Promise<void> {
     const input = $<HTMLInputElement>('invite-link');
     try {
@@ -260,6 +284,8 @@ export class Ui {
     }
   }
 }
+
+const SETTING_KEYS = ['hunt', 'hints', 'reveal'] as const;
 
 function scoreText(className: string, score: number): HTMLElement {
   const el = document.createElement('span');
