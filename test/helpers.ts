@@ -6,8 +6,13 @@ export type Msg<T extends ServerMsg['t']> = Extract<ServerMsg, { t: T }>;
 /** A fake client: records everything the room sends it. */
 export class Inbox {
   readonly messages: ServerMsg[] = [];
+  /** Set once the room closes this connection (the player resumed on another one). */
+  closed = false;
   readonly send = (msg: ServerMsg) => {
     this.messages.push(structuredClone(msg));
+  };
+  readonly close = () => {
+    this.closed = true;
   };
 
   all<T extends ServerMsg['t']>(t: T): Msg<T>[] {
@@ -23,6 +28,9 @@ export class Inbox {
   }
 }
 
+/** Resume tokens unique across every room in a test run. */
+let tokens = 0;
+
 /** A room driven by a manual clock. */
 export class Harness {
   now = 1000;
@@ -30,7 +38,7 @@ export class Harness {
   readonly inboxes = new Map<string, Inbox>();
 
   constructor(opts: Partial<RoomOptions> = {}) {
-    this.room = new GameRoom({ code: 'TEST', seed: 1, clock: () => this.now, ...opts });
+    this.room = new GameRoom({ code: 'TEST', seed: 1, clock: () => this.now, newToken: () => `token${++tokens}`, ...opts });
   }
 
   join(name: string): { id: string; inbox: Inbox } {

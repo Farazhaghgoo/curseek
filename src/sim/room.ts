@@ -17,7 +17,7 @@ import {
   type Timings,
 } from '../shared/constants';
 import type { Vec } from '../shared/geometry';
-import { Maze } from '../shared/maze';
+import { Maze, type MazeData } from '../shared/maze';
 import { clampStep, moveCircle } from '../shared/physics';
 import {
   cleanName,
@@ -35,6 +35,8 @@ import { BOT_SIGHT, BotBrain } from './bot';
 
 export interface Sink {
   send(msg: ServerMsg): void;
+  /** The player resumed on another connection; the room sends this sink nothing more. */
+  close?(): void;
 }
 
 export interface RoomOptions {
@@ -44,6 +46,8 @@ export interface RoomOptions {
   timings?: Partial<Timings>;
   /** Solo rooms start with a bot as the first seeker. */
   solo?: boolean;
+  /** Issues the tokens players resume with. Without it (solo play) nobody can resume. */
+  newToken?: () => string;
 }
 
 export type Role = 'seeker' | 'hider';
@@ -68,7 +72,14 @@ interface Player {
   budgetAt: number;
   /** Latest direction hint (seeker only), kept for bots. */
   hint: { angle: number; at: number } | null;
+  /** Proves who this is when they resume after a dropped connection. Null for bots. */
+  token: string | null;
+  /** Clock time their connection dropped, while their place is held for them. */
+  awayAt: number | null;
 }
+
+type EndMsg = Extract<ServerMsg, { t: 'end' }>;
+type RoundMsg = Extract<ServerMsg, { t: 'round' }>;
 
 /** How much movement a client may bank, to absorb network jitter without allowing bursts. */
 const BUDGET_SECONDS = 0.15;
@@ -86,6 +97,7 @@ export class GameRoom {
   readonly timings: Timings;
   private readonly clock: () => number;
   private readonly rng: Rng;
+  private readonly newToken: (() => string) | null;
   private readonly players = new Map<string, Player>();
   private nextOrder = 0;
   private nextId = 1;
@@ -100,6 +112,8 @@ export class GameRoom {
   private phaseEnd = 0;
   private nextHintAt = Infinity;
   private caughtOrder: string[] = [];
+  /** The result of the latest round, re-sent to players who resume during the results screen. */
+  private lastEnd: EndMsg | null = null;
   private lastTick = 0;
   private lastSnapshot = -Infinity;
 
@@ -109,6 +123,7 @@ export class GameRoom {
     this.clock = opts.clock ?? (() => performance.now());
     this.rng = mulberry32(opts.seed ?? randomSeed());
     this.timings = { ...DEFAULT_TIMINGS, ...opts.timings };
+    this.newToken = opts.newToken ?? null;
   }
 
   get status(): 'lobby' | 'playing' {
@@ -133,9 +148,47 @@ export class GameRoom {
   addHuman(rawName: string, sink: Sink): string | null {
     if (this.isFull) return null;
     const p = this.createPlayer(`p${this.nextId++}`, cleanName(rawName), sink);
+    p.token = this.newToken?.() ?? null;
     if (!this.hostId) this.hostId = p.id;
-    sink.send({ t: 'welcome', id: p.id, code: this.code, solo: this.solo });
+    sink.send(this.welcomeMsg(p));
     this.broadcastRoom();
+    return p.id;
+  }
+
+  /**
+   * A player's connection dropped. Their place is held for `timings.reconnectGraceMs` so a reload
+   * or a brief network outage can resume it: they keep their id, role, position, caught state and
+   * the host role, frozen where they were. If they are not back in time they are removed as if
+   * they had left. The round does not wait for them: while the seeker is away the clock keeps
+   * running and the frozen seeker still catches any hider who touches them.
+   */
+  disconnect(id: string): void {
+    const p = this.players.get(id);
+    if (!p || p.isBot) return;
+    p.sink = null;
+    p.awayAt = this.clock();
+  }
+
+  /**
+   * Gives a player's place back to them on a new connection, and tells them where things stand.
+   * If they are still connected elsewhere (a duplicated tab, or a drop the server has not noticed
+   * yet), the old connection is told and closed. Returns their id, or null if the token is not
+   * from this room or its place has expired.
+   */
+  resume(token: string, sink: Sink): string | null {
+    const p = [...this.players.values()].find((q) => q.token === token);
+    if (!p) return null;
+    if (p.sink && p.sink !== sink) {
+      p.sink.send({ t: 'error', code: 'replaced', msg: 'This game was opened in another tab or window.' });
+      p.sink.close?.();
+    }
+    p.sink = sink;
+    p.awayAt = null;
+    p.seq = 0; // The new connection numbers its inputs from scratch.
+    sink.send(this.welcomeMsg(p));
+    sink.send(this.roomMsg());
+    if (this.maze && p.inRound) sink.send(this.roundMsg(p, this.maze.toData()));
+    if (this.phase === 'ended' && this.lastEnd) sink.send(this.lastEnd);
     return p.id;
   }
 
@@ -197,6 +250,7 @@ export class GameRoom {
   /** Advances timers, bots and snapshots. Call frequently (every few milliseconds is fine). */
   update(): void {
     const now = this.clock();
+    this.expireAway(now);
     this.advancePhases(now);
     if (this.phase === 'lobby') return;
 
@@ -309,28 +363,23 @@ export class GameRoom {
     this.lastSnapshot = -Infinity;
 
     const mazeData = this.maze.toData();
-    for (const p of participants) {
-      p.sink?.send({
-        t: 'round',
-        n: this.round,
-        maze: mazeData,
-        seekerId: this.seekerId,
-        you: { x: p.pos.x, y: p.pos.y },
-        start: this.roundStart,
-        timings: { reveal: this.timings.revealMs, fade: this.timings.fadeMs, hunt: this.timings.huntMs },
-      });
-    }
+    for (const p of participants) p.sink?.send(this.roundMsg(p, mazeData));
     this.broadcastRoom();
   }
 
-  /** First round: a random player (a bot in solo play). Later rounds: next player in join order. */
+  /**
+   * First round: a random player (a bot in solo play). Later rounds: next player in join order.
+   * Players who are away could not move, so they are skipped unless nobody else is left.
+   */
   private pickSeeker(participants: Player[]): Player {
+    const present = participants.filter((p) => p.awayAt === null);
+    const candidates = present.length > 0 ? present : participants;
     if (this.lastSeekerOrder < 0) {
-      const pool = this.solo ? participants.filter((p) => p.isBot) : participants;
-      const from = pool.length > 0 ? pool : participants;
+      const pool = this.solo ? candidates.filter((p) => p.isBot) : candidates;
+      const from = pool.length > 0 ? pool : candidates;
       return from[randInt(this.rng, from.length)];
     }
-    return participants.find((p) => p.order > this.lastSeekerOrder) ?? participants[0];
+    return candidates.find((p) => p.order > this.lastSeekerOrder) ?? candidates[0];
   }
 
   private endRound(winner: 'seeker' | 'hiders' | null, reason: EndReason, at: number): void {
@@ -343,19 +392,19 @@ export class GameRoom {
       .filter((p) => !p.caught)
       .map((p) => ({ i: p.id, x: round2(p.pos.x), y: round2(p.pos.y) }));
     const next = this.players.size >= MIN_PLAYERS ? this.phaseEnd : null;
-    for (const p of this.players.values()) {
-      p.sink?.send({
-        t: 'end',
-        n: this.round,
-        winner,
-        reason,
-        seekerId: this.seekerId,
-        caught: [...this.caughtOrder],
-        survivors,
-        positions,
-        next,
-      });
-    }
+    const msg: EndMsg = {
+      t: 'end',
+      n: this.round,
+      winner,
+      reason,
+      seekerId: this.seekerId,
+      caught: [...this.caughtOrder],
+      survivors,
+      positions,
+      next,
+    };
+    this.lastEnd = msg;
+    for (const p of this.players.values()) p.sink?.send(msg);
   }
 
   private returnToLobby(): void {
@@ -377,6 +426,13 @@ export class GameRoom {
       this.endRound(null, 'not-enough-players', now);
     } else if (this.aliveHiders().length === 0) {
       this.endRound(this.caughtOrder.length > 0 ? 'seeker' : null, this.caughtOrder.length > 0 ? 'all-caught' : 'not-enough-players', now);
+    }
+  }
+
+  /** Removes players whose connection dropped and who did not come back in time. */
+  private expireAway(now: number): void {
+    for (const p of this.players.values()) {
+      if (p.awayAt !== null && now - p.awayAt >= this.timings.reconnectGraceMs) this.removePlayer(p.id);
     }
   }
 
@@ -444,7 +500,7 @@ export class GameRoom {
   // Movement
 
   private canMove(p: Player): boolean {
-    if (!p.inRound || p.caught) return false;
+    if (!p.inRound || p.caught || p.awayAt !== null) return false;
     if (this.phase === 'hunt') return true;
     return (this.phase === 'reveal' || this.phase === 'fade') && p.role === 'hider';
   }
@@ -528,18 +584,44 @@ export class GameRoom {
       budget: 0,
       budgetAt: 0,
       hint: null,
+      token: null,
+      awayAt: null,
     };
     this.players.set(id, p);
     return p;
   }
 
-  private broadcastRoom(): void {
+  private welcomeMsg(p: Player): ServerMsg {
+    const msg: ServerMsg = { t: 'welcome', id: p.id, code: this.code, solo: this.solo };
+    if (p.token) msg.token = p.token;
+    return msg;
+  }
+
+  private roomMsg(): ServerMsg {
     const players: PlayerInfo[] = [...this.players.values()]
       .sort((a, b) => a.order - b.order)
       .map((p) => ({ id: p.id, name: p.name, color: p.color, bot: p.isBot, waiting: this.phase !== 'lobby' && !p.inRound }));
-    for (const p of this.players.values()) {
-      p.sink?.send({ t: 'room', code: this.code, hostId: this.hostId, status: this.status, players });
-    }
+    return { t: 'room', code: this.code, hostId: this.hostId, status: this.status, players };
+  }
+
+  private broadcastRoom(): void {
+    const msg = this.roomMsg();
+    for (const p of this.players.values()) p.sink?.send(msg);
+  }
+
+  /** Where `p` is now: their spawn at the start of a round, or wherever they were when resuming. */
+  private roundMsg(p: Player, maze: MazeData): RoundMsg {
+    const msg: RoundMsg = {
+      t: 'round',
+      n: this.round,
+      maze,
+      seekerId: this.seekerId,
+      you: { x: p.pos.x, y: p.pos.y },
+      start: this.roundStart,
+      timings: { reveal: this.timings.revealMs, fade: this.timings.fadeMs, hunt: this.timings.huntMs },
+    };
+    if (p.caught) msg.caught = true;
+    return msg;
   }
 
   private sendSnapshots(now: number): void {

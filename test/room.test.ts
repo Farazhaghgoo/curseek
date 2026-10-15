@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MAX_SPEED, MAX_STEP, VIEW_RADIUS } from '../src/shared/constants';
 import type { Maze } from '../src/shared/maze';
-import { Harness, type Inbox } from './helpers';
+import { Harness, Inbox } from './helpers';
 
 function startGame(names = ['Ann', 'Bob']) {
   const h = new Harness();
@@ -256,6 +256,143 @@ test('the host role passes on when the host leaves', () => {
   h.room.removePlayer(a.id);
   assert.equal(h.room.currentHost, b.id);
   assert.equal(b.inbox.last('room')!.hostId, b.id);
+});
+
+const tokenOf = (inbox: Inbox) => inbox.last('welcome')!.token!;
+
+test('a player who reconnects in time keeps their id, host role, role and position', () => {
+  const { h, players } = startGame(['Ann', 'Bob', 'Cat']);
+  const [ann, bob] = players;
+  h.toHunt();
+  const maze = h.room.currentMaze!;
+  const spot = maze.cellCenter(maze.cellCount - 1);
+  h.room.placePlayer(ann.id, spot.x, spot.y);
+  const seeker = h.room.currentSeeker;
+
+  bob.inbox.clear();
+  h.room.disconnect(ann.id);
+  sendInput(h, ann.id, ann.inbox, MAX_STEP, 0);
+  h.advance(h.room.timings.reconnectGraceMs - 100);
+  assert.deepEqual(h.room.positionOf(ann.id), spot, 'frozen while away');
+  assert.equal(h.room.currentHost, ann.id);
+  assert.equal(h.room.currentPhase, 'hunt');
+  assert.deepEqual(bob.inbox.all('room'), [], 'the others are not told they left');
+
+  const back = new Inbox();
+  assert.equal(h.room.resume(tokenOf(ann.inbox), back), ann.id);
+  assert.equal(back.last('welcome')!.id, ann.id);
+  assert.equal(back.last('room')!.hostId, ann.id);
+  const round = back.last('round')!;
+  assert.equal(round.n, 1);
+  assert.equal(round.seekerId, seeker);
+  assert.deepEqual(round.you, spot, 'back where they were, not at a new spawn');
+  assert.equal(round.caught, undefined);
+
+  // The new connection numbers its inputs from 1 again.
+  h.room.handle(ann.id, { t: 'input', r: 1, s: 1, x: MAX_STEP, y: 0 });
+  assert.notDeepEqual(h.room.positionOf(ann.id), spot, 'moves again');
+  h.advance(h.room.timings.reconnectGraceMs);
+  assert.equal(h.room.currentHost, ann.id, 'and is not removed later');
+  assert.equal(back.last('snap')!.you!.s, 1);
+});
+
+test('the round carries on while the seeker is away, and ends if they do not return', () => {
+  const { h, seeker, hiders } = startGame(['Ann', 'Bob', 'Cat']);
+  h.toHunt();
+  const spot = h.room.positionOf(seeker.id);
+  h.room.disconnect(seeker.id);
+  h.advance(h.room.timings.reconnectGraceMs - 50);
+  assert.equal(h.room.currentPhase, 'hunt', 'no pause and no early end');
+  assert.deepEqual(h.room.positionOf(seeker.id), spot);
+  assert.equal(hiders[0].inbox.all('end').length, 0);
+
+  h.advance(100);
+  const end = hiders[0].inbox.last('end')!;
+  assert.equal(end.reason, 'seeker-left');
+  assert.equal(end.winner, null);
+  assert.equal(h.room.positionOf(seeker.id), null, 'their place is gone');
+  assert.equal(h.room.resume(tokenOf(seeker.inbox), new Inbox()), null, 'and so is their token');
+  h.advance(h.room.timings.intermissionMs + 10);
+  assert.equal(h.room.currentPhase, 'reveal', 'the next round starts without them');
+});
+
+test('an absent host keeps the role until the grace period runs out', () => {
+  const h = new Harness();
+  const a = h.join('Ann');
+  const b = h.join('Bob');
+  h.room.disconnect(a.id);
+  h.advance(h.room.timings.reconnectGraceMs - 50);
+  assert.equal(h.room.currentHost, a.id);
+  h.advance(100);
+  assert.equal(h.room.currentHost, b.id);
+  const room = b.inbox.last('room')!;
+  assert.equal(room.hostId, b.id);
+  assert.deepEqual(
+    room.players.map((p) => p.id),
+    [b.id],
+  );
+});
+
+test('a resume token only works in its own room', () => {
+  const one = new Harness();
+  const two = new Harness();
+  const ann = one.join('Ann');
+  two.join('Bob');
+  one.room.disconnect(ann.id);
+  assert.equal(two.room.resume(tokenOf(ann.inbox), new Inbox()), null);
+  assert.equal(one.room.resume('made-up', new Inbox()), null);
+  assert.equal(one.room.resume(tokenOf(ann.inbox), new Inbox()), ann.id);
+});
+
+test('resuming while still connected moves the player to the new connection', () => {
+  const { h, players } = startGame();
+  const ann = players[0];
+  const tab = new Inbox();
+  assert.equal(h.room.resume(tokenOf(ann.inbox), tab), ann.id);
+  assert.equal(ann.inbox.last('error')!.code, 'replaced');
+  assert.ok(ann.inbox.closed);
+  ann.inbox.clear();
+  h.advance(100);
+  assert.deepEqual(ann.inbox.messages, [], 'the old connection hears nothing more');
+  assert.ok(tab.all('snap').length > 0);
+});
+
+test('a caught player comes back caught, and sees the result if the round is over', () => {
+  const { h, seeker, hiders } = startGame(['Ann', 'Bob', 'Cat']);
+  const [first, second] = hiders;
+  h.toHunt();
+  const s = h.room.positionOf(seeker.id)!;
+  h.room.placePlayer(first.id, s.x + 5, s.y);
+  h.advance(20);
+  h.room.disconnect(first.id);
+  const back = new Inbox();
+  h.room.resume(tokenOf(first.inbox), back);
+  assert.equal(back.last('round')!.caught, true);
+
+  h.room.placePlayer(second.id, s.x, s.y + 4);
+  h.advance(20);
+  assert.equal(h.room.currentPhase, 'ended');
+  h.room.disconnect(first.id);
+  const again = new Inbox();
+  h.room.resume(tokenOf(first.inbox), again);
+  assert.equal(again.last('round')!.caught, true);
+  assert.deepEqual(again.last('end'), second.inbox.last('end'));
+});
+
+test('players who are away when a round starts are never picked to seek', () => {
+  for (let seed = 1; seed <= 10; seed++) {
+    const h = new Harness({ seed });
+    const a = h.join('Ann');
+    const b = h.join('Bob');
+    const c = h.join('Cat');
+    h.room.disconnect(b.id);
+    h.room.disconnect(c.id);
+    h.room.handle(a.id, { t: 'start' });
+    assert.equal(h.room.currentSeeker, a.id);
+    const back = new Inbox();
+    h.room.resume(tokenOf(b.inbox), back);
+    assert.ok(back.last('round')!.you, 'they still play the round, as a hider');
+  }
 });
 
 test('players joining mid-round wait for the next round without seeing anyone', () => {

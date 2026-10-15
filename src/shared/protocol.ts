@@ -40,7 +40,14 @@ export interface RoundTimings {
 }
 
 export type ServerMsg =
-  | { t: 'welcome'; id: string; code: string; solo: boolean }
+  | {
+      t: 'welcome';
+      id: string;
+      code: string;
+      solo: boolean;
+      /** Takes back this place after a reload or a dropped connection (multiplayer only). */
+      token?: string;
+    }
   | { t: 'room'; code: string; hostId: string | null; status: 'lobby' | 'playing'; players: PlayerInfo[] }
   | {
       t: 'round';
@@ -52,6 +59,8 @@ export type ServerMsg =
       /** Server time the round started (reveal begins). */
       start: number;
       timings: RoundTimings;
+      /** Only when resuming mid-round: you had already been caught. */
+      caught?: boolean;
     }
   | {
       t: 'snap';
@@ -84,7 +93,7 @@ export type ServerMsg =
       next: number | null;
     }
   | { t: 'pong'; c: number; s: number }
-  | { t: 'error'; code: 'not-found' | 'full' | 'bad-request'; msg: string };
+  | { t: 'error'; code: 'not-found' | 'full' | 'bad-request' | 'replaced'; msg: string };
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const isInt = (v: unknown): v is number => Number.isSafeInteger(v);

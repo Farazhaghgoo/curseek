@@ -35,6 +35,8 @@ export interface Timings {
   huntMs: number;
   hintEveryMs: number;
   intermissionMs: number;
+  /** How long a dropped player's place is held for them to resume it. */
+  reconnectGraceMs: number;
 }
 
 export const DEFAULT_TIMINGS: Timings = {
@@ -43,6 +45,7 @@ export const DEFAULT_TIMINGS: Timings = {
   huntMs: 90000,
   hintEveryMs: 12000,
   intermissionMs: 6000,
+  reconnectGraceMs: 10000,
 };
 
 export const SEEKER_COLOR = '#ff4d6d';
