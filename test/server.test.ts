@@ -5,7 +5,7 @@ import type { ClientMsg, ServerMsg } from '../src/shared/protocol';
 import { startServer, type RunningServer } from '../src/server/server';
 import type { Msg } from './helpers';
 
-const TIMINGS = { revealMs: 300, fadeMs: 200, huntMs: 1500, hintEveryMs: 500, intermissionMs: 400 };
+const TIMINGS = { revealMs: 300, fadeMs: 200, huntMs: 1500, hintEveryMs: 500, intermissionMs: 400, reconnectGraceMs: 400 };
 let server: RunningServer;
 
 before(async () => {
@@ -176,13 +176,100 @@ test('host departure hands over the room; seeker departure ends the round', asyn
   await other.close();
 });
 
+test('a dropped player resumes their place with the same id, host role and position', async () => {
+  const { code, clients } = await makeRoom(['Ann', 'Bob']);
+  const [a, b] = clients;
+  const welcome = await a.next('welcome');
+  assert.ok(welcome.token);
+  a.send({ t: 'start' });
+  const round = await a.next('round');
+  await a.close();
+
+  const back = await Client.connect();
+  back.send({ t: 'resume', code: code.toLowerCase(), token: welcome.token });
+  const again = await back.next('welcome');
+  assert.equal(again.id, welcome.id);
+  assert.equal(again.token, welcome.token);
+  assert.equal((await back.next('room')).hostId, welcome.id);
+  const resumed = await back.next('round');
+  assert.equal(resumed.n, round.n);
+  assert.deepEqual(resumed.maze, round.maze);
+  assert.deepEqual(resumed.you, round.you, 'at their own spot, not a new spawn');
+  await back.next('snap');
+  assert.ok(
+    b.all('room').every((m) => m.players.length === 2),
+    'the other player never saw them leave',
+  );
+  await Promise.all([back, b].map((c) => c.close()));
+});
+
+test('a place that is not resumed in time is freed as before, and its token stops working', async () => {
+  const { code, clients } = await makeRoom(['Ann', 'Bob', 'Cat']);
+  const ids = await Promise.all(clients.map(async (c) => (await c.next('welcome')).id));
+  clients[0].send({ t: 'start' });
+  const round = await clients[0].next('round');
+  const seeker = clients[ids.indexOf(round.seekerId)];
+  const other = clients.find((c) => c !== seeker)!;
+  const { token } = await seeker.next('welcome');
+  const droppedAt = Date.now();
+  await seeker.close();
+
+  const end = await other.next('end');
+  assert.equal(end.reason, 'seeker-left');
+  assert.ok(Date.now() - droppedAt >= TIMINGS.reconnectGraceMs - 10, 'the place was held first');
+  const late = await Client.connect();
+  late.send({ t: 'resume', code, token: token! });
+  assert.equal((await late.next('error')).code, 'expired');
+  await Promise.all([...clients.filter((c) => c !== seeker), late].map((c) => c.close()));
+});
+
+test('a resume token only works in its own room', async () => {
+  const one = await makeRoom(['Ann']);
+  const two = await makeRoom(['Bob']);
+  const { token } = await one.clients[0].next('welcome');
+  const thief = await Client.connect();
+  thief.send({ t: 'resume', code: two.code, token: token! });
+  assert.equal((await thief.next('error')).code, 'expired');
+  assert.equal(one.clients[0].all('error').length, 0, 'the real player is untouched');
+  await Promise.all([...one.clients, ...two.clients, thief].map((c) => c.close()));
+});
+
+test('resuming from a second connection takes over from the first', async () => {
+  const { code, clients } = await makeRoom(['Ann', 'Bob']);
+  const [a, b] = clients;
+  const { id, token } = await a.next('welcome');
+  const tab = await Client.connect();
+  tab.send({ t: 'resume', code, token: token! });
+  assert.equal((await tab.next('welcome')).id, id);
+  assert.equal((await a.next('error')).code, 'replaced');
+  await a.closed;
+  // The old connection closing must not leave the player marked as away.
+  tab.send({ t: 'start' });
+  await tab.next('round');
+  await Promise.all([tab, b].map((c) => c.close()));
+});
+
+test('leaving on purpose frees the place at once', async () => {
+  const { code, clients } = await makeRoom(['Ann', 'Bob']);
+  const [a, b] = clients;
+  const { token } = await a.next('welcome');
+  const bId = (await b.next('welcome')).id;
+  a.send({ t: 'leave' });
+  const room = await b.next('room', (m) => m.players.length === 1);
+  assert.equal(room.hostId, bId);
+  const again = await Client.connect();
+  again.send({ t: 'resume', code, token: token! });
+  assert.equal((await again.next('error')).code, 'expired');
+  await Promise.all([a, b, again].map((c) => c.close()));
+});
+
 async function roomsSettleTo(count: number): Promise<void> {
-  for (let i = 0; i < 100 && server.roomCount() !== count; i++) await new Promise((r) => setTimeout(r, 10));
+  for (let i = 0; i < 200 && server.roomCount() !== count; i++) await new Promise((r) => setTimeout(r, 10));
   assert.equal(server.roomCount(), count);
 }
 
 test('rooms are removed when the last human leaves', async () => {
-  await roomsSettleTo(0); // Earlier tests' rooms close as their sockets finish closing.
+  await roomsSettleTo(0); // Earlier tests' rooms close once their players' places expire.
   const { clients } = await makeRoom(['Solo']);
   clients[0].send({ t: 'addBot' });
   await clients[0].next('room', (m) => m.players.length === 2);

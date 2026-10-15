@@ -1,9 +1,10 @@
+import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import type { Timings } from '../shared/constants';
 import { normaliseRoomCode, parseClientMsg, type ClientMsg, type ServerMsg } from '../shared/protocol';
-import { GameRoom } from '../sim/room';
+import { GameRoom, type Sink } from '../sim/room';
 import { createStaticHandler, findPublicDir } from './static';
 
 export interface ServerOptions {
@@ -28,6 +29,9 @@ const MAX_MESSAGES_PER_SECOND = 150;
 const HEARTBEAT_MS = 10_000;
 /** Skip snapshots for clients that are not keeping up instead of queueing them forever. */
 const MAX_BUFFERED_BYTES = 256 * 1024;
+
+/** Resume tokens: 144 random bits, URL-safe. */
+const newToken = () => randomBytes(18).toString('base64url');
 
 export async function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
   const log = opts.log ?? (() => {});
@@ -55,7 +59,15 @@ export async function startServer(opts: ServerOptions = {}): Promise<RunningServ
       if (msg.t === 'snap' && ws.bufferedAmount > MAX_BUFFERED_BYTES) return;
       ws.send(JSON.stringify(msg));
     };
-    const sink = { send };
+    const sink: Sink = {
+      send,
+      // The player resumed on another connection, so this one no longer speaks for them.
+      close: () => {
+        room = null;
+        playerId = null;
+        ws.close(4000, 'Resumed elsewhere');
+      },
+    };
 
     const joinRoom = (target: GameRoom, name: string) => {
       const id = target.addHuman(name, sink);
@@ -69,12 +81,18 @@ export async function startServer(opts: ServerOptions = {}): Promise<RunningServ
 
     const handle = (msg: ClientMsg) => {
       if (room && playerId) {
-        room.handle(playerId, msg);
+        if (msg.t === 'leave') {
+          room.removePlayer(playerId);
+          room = null;
+          playerId = null;
+        } else {
+          room.handle(playerId, msg);
+        }
         return;
       }
       if (msg.t === 'create') {
         const code = newCode();
-        const created = new GameRoom({ code, timings: opts.timings });
+        const created = new GameRoom({ code, timings: opts.timings, newToken });
         rooms.set(code, created);
         joinRoom(created, msg.name);
         log(`room ${code} created`);
@@ -82,6 +100,15 @@ export async function startServer(opts: ServerOptions = {}): Promise<RunningServ
         const target = rooms.get(normaliseRoomCode(msg.code));
         if (!target) send({ t: 'error', code: 'not-found', msg: 'No room with that code. Check it and try again.' });
         else joinRoom(target, msg.name);
+      } else if (msg.t === 'resume') {
+        const target = rooms.get(normaliseRoomCode(msg.code));
+        const id = target?.resume(msg.token, sink);
+        if (!target || !id) {
+          send({ t: 'error', code: 'expired', msg: 'Your place in that game has expired.' });
+        } else {
+          room = target;
+          playerId = id;
+        }
       } else if (msg.t === 'ping') {
         send({ t: 'pong', c: msg.c, s: performance.now() });
       }
@@ -113,14 +140,10 @@ export async function startServer(opts: ServerOptions = {}): Promise<RunningServ
     });
 
     ws.on('close', () => {
-      if (!room || !playerId) return;
-      const left = room;
-      left.removePlayer(playerId);
+      // Hold the player's place for a while: a reload or a brief outage can resume it.
+      if (room && playerId) room.disconnect(playerId);
       room = null;
-      if (left.humanCount === 0) {
-        rooms.delete(left.code);
-        log(`room ${left.code} closed`);
-      }
+      playerId = null;
     });
 
     // Heartbeat: drop connections that stop answering pings (closed laptops, dead networks).
@@ -136,7 +159,14 @@ export async function startServer(opts: ServerOptions = {}): Promise<RunningServ
   });
 
   const loop = setInterval(() => {
-    for (const room of rooms.values()) room.update();
+    for (const [code, room] of rooms) {
+      room.update();
+      // Closes once the last human has left, or has not come back in time.
+      if (room.humanCount === 0) {
+        rooms.delete(code);
+        log(`room ${code} closed`);
+      }
+    }
   }, 5);
 
   await new Promise<void>((resolve) => http.listen(opts.port ?? 0, opts.host, resolve));

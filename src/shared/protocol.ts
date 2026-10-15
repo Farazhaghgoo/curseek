@@ -15,7 +15,11 @@ export type ClientMsg =
   | { t: 'removeBot' }
   /** One input tick: requested displacement (x, y) in world units, for round r, sequence s. */
   | { t: 'input'; r: number; s: number; x: number; y: number }
-  | { t: 'ping'; c: number };
+  | { t: 'ping'; c: number }
+  /** Takes back a place held after a dropped connection, with the token from 'welcome'. */
+  | { t: 'resume'; code: string; token: string }
+  /** Leaves for good. Just closing the connection holds the place for a while instead. */
+  | { t: 'leave' };
 
 export interface PlayerInfo {
   id: string;
@@ -93,7 +97,7 @@ export type ServerMsg =
       next: number | null;
     }
   | { t: 'pong'; c: number; s: number }
-  | { t: 'error'; code: 'not-found' | 'full' | 'bad-request' | 'replaced'; msg: string };
+  | { t: 'error'; code: 'not-found' | 'full' | 'bad-request' | 'expired' | 'replaced'; msg: string };
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const isInt = (v: unknown): v is number => Number.isSafeInteger(v);
@@ -109,9 +113,14 @@ export function parseClientMsg(data: unknown): ClientMsg | null {
       return typeof m.name === 'string' && typeof m.code === 'string' && m.code.length <= 12
         ? { t: 'join', code: m.code, name: m.name.slice(0, 64) }
         : null;
+    case 'resume':
+      return typeof m.code === 'string' && m.code.length <= 12 && typeof m.token === 'string' && m.token.length <= 64
+        ? { t: 'resume', code: m.code, token: m.token }
+        : null;
     case 'start':
     case 'addBot':
     case 'removeBot':
+    case 'leave':
       return { t: m.t };
     case 'input':
       return isInt(m.r) && isInt(m.s) && isNum(m.x) && isNum(m.y) && Math.abs(m.x) < 1e4 && Math.abs(m.y) < 1e4
