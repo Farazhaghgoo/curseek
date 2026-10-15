@@ -7,6 +7,7 @@ import { normaliseRoomCode, type PlayerInfo } from '../shared/protocol';
 import { mulberry32, randomSeed } from '../shared/rng';
 import { Sound } from './audio';
 import { Input } from './input';
+import { rejoin } from './rejoin';
 import { Renderer, type DrawPlayer, type Frame, type Ripple } from './render';
 import { Session, type EndInfo, type SessionListener } from './session';
 import { openLocalGame, openSocket, type Transport } from './transport';
@@ -49,7 +50,7 @@ if (roomParam) ui.codeInput.value = normaliseRoomCode(roomParam);
 const savedToken = roomParam ? storageGet(tokenKey(ui.codeInput.value), 'sessionStorage') : null;
 if (savedToken) {
   ui.setBusy(true);
-  void rejoin(ui.codeInput.value, savedToken, () => ui.showLanding());
+  void rejoinRoom(ui.codeInput.value, savedToken, () => ui.showLanding());
 }
 
 // ---------------------------------------------------------------------------------------
@@ -120,53 +121,29 @@ function leave(message = ''): void {
 // Reconnecting
 
 /**
- * Takes back this tab's place in a room after a reload or a dropped connection. The server holds
- * the place for a few seconds, so keep trying while it cannot be reached. If the place is gone,
- * forget the token and call `failed`.
+ * Takes back this tab's place in a room after a reload or a dropped connection, retrying while
+ * the server cannot be reached. If the place is gone, forget the token and call `failed`.
  */
-async function rejoin(code: string, token: string, failed: () => void): Promise<void> {
+async function rejoinRoom(code: string, token: string, failed: () => void): Promise<void> {
   const gen = generation;
-  const giveUpAt = performance.now() + DEFAULT_TIMINGS.reconnectGraceMs;
   reconnecting = true;
-  for (;;) {
-    const result = await tryResume(code, token, gen);
-    if (gen !== generation) return; // The player left meanwhile.
-    if (result === 'unreachable' && performance.now() < giveUpAt) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      continue;
-    }
-    reconnecting = false;
-    if (result !== 'ok') {
-      storageSet(tokenKey(code), null, 'sessionStorage');
-      failed();
-    }
-    return;
-  }
-}
-
-/** One attempt over a fresh connection. On success a new session takes over at once. */
-async function tryResume(code: string, token: string, gen: number): Promise<'ok' | 'gone' | 'unreachable'> {
-  const transport = await openSocket().catch(() => null);
-  if (!transport) return 'unreachable';
-  return new Promise((resolve) => {
-    transport.onClose = () => resolve('unreachable');
-    transport.onMessage = (msg) => {
-      if (msg.t === 'error') {
-        transport.close();
-        resolve('gone');
-      } else if (msg.t === 'welcome' && gen !== generation) {
-        // The player left while we were reconnecting: let the place go now.
-        transport.send({ t: 'leave' });
-        transport.close();
-        resolve('ok');
-      } else if (msg.t === 'welcome') {
-        begin(transport);
-        transport.onMessage(msg); // The new session's handler by now.
-        resolve('ok');
-      }
-    };
-    transport.send({ t: 'resume', code, token });
+  const result = await rejoin({
+    code,
+    token,
+    open: openSocket,
+    adopt: (transport, welcome) => {
+      begin(transport);
+      transport.onMessage(welcome); // The new session's handler by now.
+    },
+    wanted: () => gen === generation,
+    giveUpMs: DEFAULT_TIMINGS.reconnectGraceMs,
   });
+  if (result === 'cancelled') return;
+  reconnecting = false;
+  if (result !== 'ok') {
+    storageSet(tokenKey(code), null, 'sessionStorage');
+    failed();
+  }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -260,7 +237,7 @@ const listener: SessionListener = {
       return;
     }
     input.releaseLock();
-    void rejoin(s.code, s.token, () => leave(reason));
+    void rejoinRoom(s.code, s.token, () => leave(reason));
   },
 };
 
