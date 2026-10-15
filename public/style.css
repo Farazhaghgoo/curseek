@@ -473,6 +473,16 @@ kbd {
   color: var(--text);
 }
 
+@media (max-width: 760px) {
+  .prompt {
+    left: 50%;
+    top: auto;
+    bottom: 12px;
+    transform: translateX(-50%);
+    max-width: calc(100vw - 24px);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
