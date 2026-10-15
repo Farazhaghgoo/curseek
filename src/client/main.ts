@@ -470,7 +470,8 @@ function updateOverlays(s: Session | null, now: number): void {
       if (late < 1000) sound.play('release');
     }
     countdown(Math.ceil(huntLeft / 1000), 5);
-    if (now < releaseShownUntil) banner = s.isSeeker ? 'Go! Find them.' : 'The seeker is loose';
+    if (s.playerInfo(s.seekerId)?.away) banner = 'The seeker lost connection — the clock is paused';
+    else if (now < releaseShownUntil) banner = s.isSeeker ? 'Go! Find them.' : 'The seeker is loose';
     else if (s.caught) banner = 'Caught — watching the seeker';
   }
   ui.setBanner(banner);

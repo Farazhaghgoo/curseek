@@ -302,13 +302,17 @@ test('a player who reconnects in time keeps their id, host role, role and positi
   assert.equal(back.last('snap')!.you!.s, 1);
 });
 
-test('the round carries on while the seeker is away, and ends if they do not return', () => {
+test('the hunt clock stops while the seeker is away, and the round ends if they do not return', () => {
   const { h, seeker, hiders } = startGame(['Ann', 'Bob', 'Cat']);
   h.toHunt();
+  h.advance(50);
+  const endsAt = hiders[0].inbox.last('snap')!.pe;
   const spot = h.room.positionOf(seeker.id);
   h.room.disconnect(seeker.id);
   h.advance(h.room.timings.reconnectGraceMs - 50);
-  assert.equal(h.room.currentPhase, 'hunt', 'no pause and no early end');
+  assert.equal(h.room.currentPhase, 'hunt', 'no early end');
+  const paused = hiders[0].inbox.last('snap')!.pe - endsAt;
+  assert.ok(paused >= h.room.timings.reconnectGraceMs - 100, `the clock stood still (end moved ${paused} ms)`);
   assert.deepEqual(h.room.positionOf(seeker.id), spot);
   assert.equal(hiders[0].inbox.all('end').length, 0);
 
@@ -320,6 +324,21 @@ test('the round carries on while the seeker is away, and ends if they do not ret
   assert.equal(h.room.resume(tokenOf(seeker.inbox), new Inbox()), null, 'and so is their token');
   h.advance(h.room.timings.intermissionMs + 10);
   assert.equal(h.room.currentPhase, 'reveal', 'the next round starts without them');
+});
+
+test('a seeker who comes back gets the hunt time they missed', () => {
+  const { h, seeker } = startGame();
+  h.toHunt();
+  const t = h.room.timings;
+  const huntEnd = h.now + t.huntMs - 10; // toHunt() went 10 ms into the hunt.
+  h.room.disconnect(seeker.id);
+  h.advance(4000);
+  h.room.resume(tokenOf(seeker.inbox), new Inbox());
+  h.advance(huntEnd + 4000 - h.now - 50);
+  assert.equal(h.room.currentPhase, 'hunt', 'still running when it would have ended');
+  h.advance(100);
+  assert.equal(h.room.currentPhase, 'ended');
+  assert.equal(seeker.inbox.last('end')?.reason, undefined, 'the old connection hears nothing');
 });
 
 test('a host who drops out in the lobby hands over at once, and is removed if not back in time', () => {

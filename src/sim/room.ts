@@ -119,6 +119,7 @@ export class GameRoom {
   private lastEnd: EndMsg | null = null;
   private lastTick = 0;
   private lastSnapshot = -Infinity;
+  private lastUpdate = 0;
 
   constructor(opts: RoomOptions) {
     this.code = opts.code;
@@ -164,8 +165,10 @@ export class GameRoom {
    * A player's connection dropped. Their place is held for `timings.reconnectGraceMs` so a reload
    * or a brief network outage can resume it: they keep their id, role, position and caught state,
    * frozen where they were, and everyone else sees them marked as away. If they are not back in
-   * time they are removed as if they had left. A host keeps the role during a round, but in the
-   * lobby it passes on at once, since nobody else could start the game.
+   * time they are removed as if they had left. While the seeker is away the hunt clock stops,
+   * though hiders may still move and the frozen seeker still catches anyone who touches them.
+   * A host keeps the role during a round, but in the lobby it passes on at once, since nobody
+   * else could start the game.
    */
   disconnect(id: string): void {
     const p = this.players.get(id);
@@ -256,6 +259,7 @@ export class GameRoom {
   /** Advances timers, bots and snapshots. Call frequently (every few milliseconds is fine). */
   update(): void {
     const now = this.clock();
+    this.pauseForAbsentSeeker(now);
     this.expireAway(now);
     this.advancePhases(now);
     if (this.phase === 'lobby') return;
@@ -467,6 +471,17 @@ export class GameRoom {
     p.sink.send(this.roundMsg(p, this.maze.toData()));
     this.sendSnapshots(this.clock(), p);
     if (this.phase === 'ended' && this.lastEnd) p.sink.send(this.lastEnd);
+  }
+
+  /** The hunt clock, and the seeker's hints, stand still while the seeker is away. */
+  private pauseForAbsentSeeker(now: number): void {
+    const dt = now - this.lastUpdate;
+    this.lastUpdate = now;
+    if (this.phase !== 'hunt') return;
+    const seeker = this.players.get(this.seekerId);
+    if (!seeker || seeker.awayAt === null) return;
+    this.phaseEnd += dt;
+    this.nextHintAt += dt;
   }
 
   /** Removes players whose connection dropped and who did not come back in time. */
