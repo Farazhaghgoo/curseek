@@ -40,6 +40,9 @@ npm run check        # TypeScript type check + all tests
   the mouse, and click again to resume.
 - **Keyboard:** **WASD** or the **arrow keys**. Diagonal movement is no faster than straight
   movement.
+- **Touch:** touch anywhere on the maze and drag. A joystick appears under your finger, and
+  the further you drag, the faster you move, up to the same top speed. On a phone, turn it
+  sideways for a bigger maze.
 - **M** mutes or unmutes the sound. The speaker button in the top-right corner does the same.
 - The **✕** button leaves the room.
 
@@ -50,6 +53,8 @@ moves your cursor directly while the pointer is over the maze.
 
 - At the start of each round you get a new maze and a new seeker. The seeker role rotates
   through the players in join order.
+- The host can change the hunt length, the hint interval and how long the maze is shown, in
+  the lobby between games. The defaults are below.
 - **Reveal (3 s):** the whole maze is visible, but other players are not. Hiders can
   already move. The seeker is frozen.
 - **Fade (2 s):** the maze fades to darkness. The seeker is still frozen.
@@ -58,11 +63,16 @@ moves your cursor directly while the pointer is over the maze.
 - The seeker (the red crosshair) catches a hider by touching them. A wall between the two
   players prevents the catch.
 - Every 12 seconds the seeker sees a brief red arc on the edge of their light. It points
-  roughly (one of 16 directions) toward the nearest surviving hider.
+  roughly (one of 16 directions) toward the nearest surviving hider. In the final 30
+  seconds it comes every 4 seconds, so hiding in a dead end until time runs out is risky.
 - The seeker wins by catching every hider. If any hider is still free when time runs out,
   the hiders win.
 - Caught hiders watch the rest of the round from the seeker's point of view.
-- Players who join during a round wait for the next one.
+- Players who join during a round watch it from the seeker's point of view, and play from the
+  next one.
+- **Scores** carry over from round to round: the seeker gets a point per catch, and every
+  hider still free when time runs out gets a point. They show on the results screen and in
+  the lobby.
 
 ## How it works
 
@@ -112,17 +122,33 @@ Serverless function platforms (such as Vercel or Netlify Functions) are not suit
 do not keep WebSocket connections or in-memory rooms alive. Serve the game over HTTPS in
 production; the client switches to `wss://` automatically.
 
+- `GET /healthz` answers `{"ok":true,...}` with the number of open rooms and connections.
+  The Docker image uses it as its health check, and runs as the unprivileged `node` user.
+- Only pages from the game's own host may open the WebSocket (the `Origin` header must match
+  `Host`). Each client address may hold 24 connections, the server 3000, and at most 500
+  rooms can be open. Connections that are not in a room are closed after a minute.
+- Behind a reverse proxy (as on Render, Fly.io or Railway), set `TRUST_PROXY=1` so the
+  per-address limit uses the real client address from `X-Forwarded-For`. Without it, every
+  player appears to come from the proxy and shares one limit.
+- When the server shuts down (`SIGTERM`), players are told their game has ended rather than
+  left to retry.
+
 ## Assumptions and decisions
 
 - Hiders cannot see each other through walls either: everyone sees only their own lit area.
 - Players do not collide with each other. Only walls block movement.
 - Caught hiders leave the field and spectate the seeker's view.
 - If a player's connection drops, or they reload the page, the server holds their place for
-  10 seconds. They keep their role, position, caught state and host role, and their cursor
-  stays frozen where it was. The client reconnects on its own, or on reload, and carries on
-  in the same round. The round does not pause in the meantime: an absent seeker stands
-  still while the clock runs, and still catches any hider who touches them. A player who is
-  away when a new round starts plays it as a hider, never as the seeker.
+  10 seconds. They keep their role, position and caught state, and their cursor stays frozen
+  where it was. Everyone else sees them faded and marked as away. The client reconnects on
+  its own, or on reload, and carries on in the same round. A player who is away when a new
+  round starts plays it as a hider, never as the seeker.
+- While the seeker is away, the hunt clock and their hints stop, so they lose no time.
+  Hiders can still move, and the frozen seeker still catches any hider who touches them.
+- A host who drops out keeps the role during a round. In the lobby it passes on at once, so
+  the others can still start.
+- The host can remove any other player from the lobby list. A removed player can join again
+  with the room code; there are no bans.
 - A player who leaves with the ✕ button is removed at once. So is a dropped player who is
   not back within 10 seconds. If the seeker is removed, the round ends with no winner and
   the next round starts with a new seeker. If the host is removed, the next player who
@@ -140,11 +166,11 @@ production; the client switches to `wss://` automatically.
   server cannot be scaled horizontally without sticky routing.
 - A dropped player can take their place back only within 10 seconds, and only from the same
   browser tab: the resume token lives in that tab's session storage. After that, joining
-  again makes them a new player who waits for the next round. The round clock keeps
-  running while anyone is away.
+  again makes them a new player who waits for the next round. Only the seeker's absence
+  stops the clock.
 - Without pointer lock (the fallback mode), the mouse stops moving your cursor when the
   hidden system pointer reaches the edge of the window. Keyboard controls always work.
-- The game is designed for desktop browsers. Touch input is not supported, and on narrow
-  portrait screens the maze is small.
+- The maze is landscape-shaped, so on a phone held upright it is small. Touch controls have
+  been tested with simulated touch events, not yet on real phones.
 - With large network jitter (more than about 150 ms), the server's speed limiter may trim
   movement, which shows up as small corrections.
