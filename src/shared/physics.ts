@@ -1,0 +1,62 @@
+import { MAX_STEP, PLAYER_RADIUS, WALL_HALF } from './constants';
+import { distSqPointSegment, type Vec } from './geometry';
+import type { Maze } from './maze';
+
+/**
+ * Longest distance moved between collision resolutions. Walls are effectively
+ * 2 * (PLAYER_RADIUS + WALL_HALF) thick for a player's centre, so substeps this small
+ * can never carry the centre across a wall, however large the requested move.
+ */
+export const SUBSTEP = 1.5;
+
+const closest: Vec = { x: 0, y: 0 };
+
+/** Limits a requested per-tick displacement to the maximum speed, discarding any excess. */
+export function clampStep(dx: number, dy: number, max = MAX_STEP): Vec {
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return { x: 0, y: 0 };
+  const len = Math.hypot(dx, dy);
+  if (len <= max) return { x: dx, y: dy };
+  const k = max / len;
+  return { x: dx * k, y: dy * k };
+}
+
+/**
+ * Pushes a circle out of any walls it overlaps. Walls are capsules (segments with rounded
+ * ends), so the push direction follows the nearest surface and the circle slides along walls
+ * and rounds wall ends instead of snagging on them.
+ */
+export function resolveWalls(maze: Maze, pos: Vec, radius = PLAYER_RADIUS): void {
+  const min = radius + WALL_HALF;
+  const minSq = min * min;
+  for (let iter = 0; iter < 4; iter++) {
+    let pushed = false;
+    for (const idx of maze.wallsNear(pos.x, pos.y)) {
+      const dSq = distSqPointSegment(pos.x, pos.y, maze.edges[idx], closest);
+      if (dSq >= minSq) continue;
+      const d = Math.sqrt(dSq);
+      if (d < 1e-9) continue; // Unreachable with substepping; never guess a side.
+      const k = (min - d) / d;
+      pos.x += (pos.x - closest.x) * k;
+      pos.y += (pos.y - closest.y) * k;
+      pushed = true;
+    }
+    if (!pushed) break;
+  }
+  // Final safety net: stay inside the outer boundary.
+  pos.x = Math.min(maze.width - min, Math.max(min, pos.x));
+  pos.y = Math.min(maze.height - min, Math.max(min, pos.y));
+}
+
+/** Moves a circle by (dx, dy) in small substeps, resolving wall contacts after each one. */
+export function moveCircle(maze: Maze, pos: Vec, dx: number, dy: number, radius = PLAYER_RADIUS): void {
+  const len = Math.hypot(dx, dy);
+  if (!(len > 0)) return;
+  const steps = Math.ceil(len / SUBSTEP);
+  const sx = dx / steps;
+  const sy = dy / steps;
+  for (let i = 0; i < steps; i++) {
+    pos.x += sx;
+    pos.y += sy;
+    resolveWalls(maze, pos, radius);
+  }
+}
