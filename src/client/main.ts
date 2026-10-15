@@ -316,6 +316,7 @@ function nextRoundText(next: number | null): string {
 
 canvas.addEventListener('click', () => {
   sound.unlock();
+  if (input.usesTouch) return; // Touch steers with the on-screen joystick instead.
   if (!reconnecting && session?.status === 'playing' && session.participating) input.requestLock();
 });
 
@@ -330,7 +331,7 @@ function frame(now: number): void {
   last = now;
   const s = session;
   const inRound = !reconnecting && !!s && s.status === 'playing' && !!s.maze && s.participating;
-  input.active = inRound && s!.canMoveNow() && (input.locked || input.fallback || hasKeys());
+  input.active = inRound && s!.canMoveNow() && (input.locked || input.fallback || hasDirection());
 
   if (s && inRound) {
     acc += dt;
@@ -342,11 +343,11 @@ function frame(now: number): void {
     }
     if (n > 0) {
       const mouse = input.active ? input.takeMouse() : { x: 0, y: 0 };
-      const keys = input.keyDirection();
+      const dir = input.direction();
       // Spread this frame's mouse motion over its ticks, converted from screen pixels to world units.
       const mx = mouse.x / n / renderer.scale;
       const my = mouse.y / n / renderer.scale;
-      for (let i = 0; i < n; i++) s.tick({ x: mx + keys.x * MAX_STEP, y: my + keys.y * MAX_STEP });
+      for (let i = 0; i < n; i++) s.tick({ x: mx + dir.x * MAX_STEP, y: my + dir.y * MAX_STEP });
     }
     if (!input.active) input.clearMouse();
   } else {
@@ -359,9 +360,9 @@ function frame(now: number): void {
   requestAnimationFrame(frame);
 }
 
-function hasKeys(): boolean {
-  const k = input.keyDirection();
-  return k.x !== 0 || k.y !== 0;
+function hasDirection(): boolean {
+  const d = input.direction();
+  return d.x !== 0 || d.y !== 0;
 }
 
 function buildFrame(s: Session | null, now: number, dt: number, alpha: number): Frame {
@@ -488,8 +489,15 @@ function updateOverlays(s: Session | null, now: number): void {
   }
   ui.setBanner(banner);
 
-  const needsLock = s.participating && !s.caught && phase !== 'ended' && !input.locked && !input.fallback;
-  ui.setPrompt(needsLock ? 'Click the maze to move with your mouse · or use WASD' : null);
+  const steering = s.participating && !s.caught && phase !== 'ended';
+  let prompt: string | null = null;
+  if (steering && input.usesTouch && !input.touching) {
+    const portrait = window.innerHeight > window.innerWidth;
+    prompt = `Drag anywhere to move${portrait ? ' · turn sideways for a bigger maze' : ''}`;
+  } else if (steering && !input.usesTouch && !input.locked && !input.fallback) {
+    prompt = 'Click the maze to move with your mouse · or use WASD';
+  }
+  ui.setPrompt(prompt);
 }
 
 // Read-only handle for inspecting the client from the devtools console.
@@ -497,6 +505,7 @@ Object.defineProperty(window, 'curseek', { value: { get session() { return sessi
 
 window.addEventListener('resize', () => renderer.resize());
 input.onLockChange = () => updateOverlays(session, performance.now());
+input.onStickChange = (stick) => ui.setStick(session?.status === 'playing' && session.participating ? stick : null);
 requestAnimationFrame(frame);
 
 type StorageArea = 'localStorage' | 'sessionStorage';

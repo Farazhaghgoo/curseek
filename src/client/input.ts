@@ -1,5 +1,5 @@
-// Mouse (pointer lock preferred) and keyboard input. Produces raw deltas; the game loop turns
-// them into per-tick movement requests capped at the maximum speed.
+// Mouse (pointer lock preferred), keyboard and touch input. Produces raw deltas and directions;
+// the game loop turns them into per-tick movement requests capped at the maximum speed.
 
 import type { Vec } from '../shared/geometry';
 
@@ -14,6 +14,19 @@ const KEY_DIRS: Record<string, [number, number]> = {
   ArrowRight: [1, 0],
 };
 
+/** How far (CSS pixels) a finger must drag from where it went down for full speed. */
+export const STICK_RADIUS = 56;
+/** Drags shorter than this fraction of the radius do not move. */
+const DEAD_ZONE = 0.15;
+
+/** A virtual joystick: where the finger went down, and its offset scaled to -1..1. */
+export interface Stick {
+  ox: number;
+  oy: number;
+  x: number;
+  y: number;
+}
+
 export class Input {
   /** True while the game wants movement input (playing and able to move). */
   active = false;
@@ -21,11 +34,16 @@ export class Input {
   /** Pointer lock is unavailable here: the mouse moves the player while over the canvas. */
   fallback: boolean;
   onLockChange: () => void = () => {};
+  /** Called whenever the touch joystick appears, moves or goes away. */
+  onStickChange: (stick: Stick | null) => void = () => {};
+  /** This device has been used with touch (or reports a coarse pointer). */
+  usesTouch = window.matchMedia('(pointer: coarse)').matches;
 
   private mx = 0;
   private my = 0;
   private everLocked = false;
   private readonly keys = new Set<string>();
+  private stick: (Stick & { id: number }) | null = null;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     this.fallback = typeof canvas.requestPointerLock !== 'function';
@@ -56,6 +74,40 @@ export class Input {
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     window.addEventListener('blur', () => this.keys.clear());
+
+    // Touch: drag anywhere on the maze. The joystick is centred where the finger went down.
+    canvas.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse') {
+        this.usesTouch = false; // A touch laptop's mouse still captures the pointer.
+        return;
+      }
+      if (this.stick) return;
+      this.usesTouch = true;
+      try {
+        canvas.setPointerCapture(e.pointerId);
+      } catch {
+        // Capture is a nicety: moves over the canvas still arrive without it.
+      }
+      this.stick = { id: e.pointerId, ox: e.clientX, oy: e.clientY, x: 0, y: 0 };
+      this.emitStick();
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      const stick = this.stick;
+      if (!stick || e.pointerId !== stick.id) return;
+      const dx = e.clientX - stick.ox;
+      const dy = e.clientY - stick.oy;
+      const k = 1 / Math.max(STICK_RADIUS, Math.hypot(dx, dy));
+      stick.x = dx * k;
+      stick.y = dy * k;
+      this.emitStick();
+    });
+    const lift = (e: PointerEvent) => {
+      if (this.stick?.id !== e.pointerId) return;
+      this.stick = null;
+      this.emitStick();
+    };
+    canvas.addEventListener('pointerup', lift);
+    canvas.addEventListener('pointercancel', lift);
   }
 
   /** Asks for pointer lock. Must be called from a user gesture (a click). */
@@ -87,6 +139,22 @@ export class Input {
     this.my = 0;
   }
 
+  /** True while a finger is on the touch joystick. */
+  get touching(): boolean {
+    return this.stick !== null;
+  }
+
+  /**
+   * Keyboard or touch-joystick direction, at most length 1: keys always move at full speed, the
+   * joystick in proportion to how far the finger has dragged.
+   */
+  direction(): Vec {
+    const keys = this.keyDirection();
+    if (keys.x !== 0 || keys.y !== 0 || !this.stick) return keys;
+    const { x, y } = this.stick;
+    return Math.hypot(x, y) < DEAD_ZONE ? { x: 0, y: 0 } : { x, y };
+  }
+
   /** Keyboard direction, normalised so diagonals are no faster than straight lines. */
   keyDirection(): Vec {
     let x = 0;
@@ -100,6 +168,11 @@ export class Input {
     }
     const len = Math.hypot(x, y);
     return len > 0 ? { x: x / len, y: y / len } : { x: 0, y: 0 };
+  }
+
+  private emitStick(): void {
+    const s = this.stick;
+    this.onStickChange(s && { ox: s.ox, oy: s.oy, x: s.x, y: s.y });
   }
 
   private onLockFailed(): void {

@@ -2,6 +2,7 @@
 // Player names are always inserted as text, never as HTML.
 
 import { SETTING_CHOICES, type PlayerInfo, type RoomSettings } from '../shared/protocol';
+import { STICK_RADIUS, type Stick } from './input';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -64,6 +65,8 @@ export class Ui {
   private readonly soundBtn = $<HTMLButtonElement>('btn-sound');
   private readonly leaveBtn = $<HTMLButtonElement>('btn-leave');
   private readonly landingError = $('landing-error');
+  private readonly stick = $('stick');
+  private readonly knob = $('stick-knob');
   private readonly settingSelects = {
     hunt: $<HTMLSelectElement>('set-hunt'),
     hints: $<HTMLSelectElement>('set-hints'),
@@ -261,6 +264,15 @@ export class Ui {
 
   hideResult(): void {
     this.result.hidden = true;
+  }
+
+  /** Draws the touch joystick where the finger went down, with the knob following the drag. */
+  setStick(stick: Stick | null): void {
+    this.stick.hidden = stick === null;
+    if (!stick) return;
+    this.stick.style.left = `${stick.ox}px`;
+    this.stick.style.top = `${stick.oy}px`;
+    this.knob.style.transform = `translate(${stick.x * STICK_RADIUS}px, ${stick.y * STICK_RADIUS}px)`;
   }
 
   setSound(on: boolean): void {
