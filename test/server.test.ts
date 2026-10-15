@@ -1,0 +1,214 @@
+import assert from 'node:assert/strict';
+import { after, before, test } from 'node:test';
+import { WebSocket } from 'ws';
+import type { ClientMsg, ServerMsg } from '../src/shared/protocol';
+import { startServer, type RunningServer } from '../src/server/server';
+import type { Msg } from './helpers';
+
+const TIMINGS = { revealMs: 300, fadeMs: 200, huntMs: 1500, hintEveryMs: 500, intermissionMs: 400 };
+let server: RunningServer;
+
+before(async () => {
+  server = await startServer({ port: 0, timings: TIMINGS });
+});
+
+after(async () => {
+  await server.close();
+});
+
+class Client {
+  readonly messages: ServerMsg[] = [];
+  private waiters: (() => void)[] = [];
+  readonly closed: Promise<void>;
+  private constructor(readonly ws: WebSocket) {
+    ws.on('message', (data) => {
+      this.messages.push(JSON.parse(data.toString()));
+      for (const w of this.waiters.splice(0)) w();
+    });
+    this.closed = new Promise((resolve) => ws.on('close', () => resolve()));
+  }
+
+  static async connect(): Promise<Client> {
+    const ws = new WebSocket(`ws://localhost:${server.port}/ws`);
+    await new Promise((resolve, reject) => {
+      ws.once('open', resolve);
+      ws.once('error', reject);
+    });
+    return new Client(ws);
+  }
+
+  send(msg: ClientMsg | Record<string, unknown> | string): void {
+    this.ws.send(typeof msg === 'string' ? msg : JSON.stringify(msg));
+  }
+
+  all<T extends ServerMsg['t']>(t: T): Msg<T>[] {
+    return this.messages.filter((m): m is Msg<T> => m.t === t);
+  }
+
+  async next<T extends ServerMsg['t']>(t: T, where: (m: Msg<T>) => boolean = () => true, timeout = 5000): Promise<Msg<T>> {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      const found = this.messages.find((m): m is Msg<T> => m.t === t && where(m as Msg<T>));
+      if (found) return found;
+      const left = deadline - Date.now();
+      if (left <= 0) throw new Error(`timed out waiting for ${t}`);
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, left);
+        this.waiters.push(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    }
+  }
+
+  /** Forgets received messages, so later waits only match what arrives after this point. */
+  clear(): void {
+    this.messages.length = 0;
+  }
+
+  close(): Promise<void> {
+    this.ws.close();
+    return this.closed;
+  }
+}
+
+async function makeRoom(names: string[]) {
+  const host = await Client.connect();
+  host.send({ t: 'create', name: names[0] });
+  const welcome = await host.next('welcome');
+  const clients = [host];
+  for (const name of names.slice(1)) {
+    const c = await Client.connect();
+    c.send({ t: 'join', code: welcome.code.toLowerCase(), name });
+    await c.next('welcome');
+    clients.push(c);
+  }
+  await host.next('room', (m) => m.players.length === names.length);
+  return { code: welcome.code, clients };
+}
+
+test('serves the game page', async () => {
+  const res = await fetch(`http://localhost:${server.port}/`);
+  assert.equal(res.status, 200);
+  assert.match(await res.text(), /curseek/);
+});
+
+test('two players join by code and complete a round with matching results', async () => {
+  const { code, clients } = await makeRoom(['Ann', 'Bob']);
+  assert.match(code, /^[A-Z2-9]{4}$/);
+  const [a, b] = clients;
+  a.send({ t: 'start' });
+  const [ra, rb] = await Promise.all([a.next('round'), b.next('round')]);
+  assert.equal(ra.seekerId, rb.seekerId);
+  assert.deepEqual(ra.maze, rb.maze);
+  assert.notDeepEqual(ra.you, rb.you);
+
+  const [ea, eb] = await Promise.all([a.next('end'), b.next('end')]);
+  assert.deepEqual(ea, eb, 'both clients see the same result');
+  assert.ok(ea.winner === 'hiders' || ea.winner === 'seeker');
+
+  // Snapshots agree on the timer and remaining hiders.
+  const sa = a.all('snap').filter((s) => s.ph === 'hunt').at(-1)!;
+  const sb = b.all('snap').find((s) => s.st === sa.st);
+  if (sb) {
+    assert.equal(sa.pe, sb.pe);
+    assert.equal(sa.alive, sb.alive);
+  }
+  // The next round starts on its own with the other player seeking.
+  const [na] = await Promise.all([a.next('round', (m) => m.n === 2), b.next('round', (m) => m.n === 2)]);
+  assert.notEqual(na.seekerId, ra.seekerId);
+  await Promise.all(clients.map((c) => c.close()));
+});
+
+test('the server moves players only through validated input', async () => {
+  const { clients } = await makeRoom(['Ann', 'Bob']);
+  const [a, b] = clients;
+  a.send({ t: 'start' });
+  const round = await a.next('round');
+  const hider = round.seekerId === (await a.next('welcome')).id ? b : a;
+  const hiderRound = await hider.next('round');
+  // Try to teleport and to send garbage: the position must stay put.
+  hider.send({ t: 'input', r: hiderRound.n, s: 1, x: 5000, y: 5000 });
+  hider.send({ t: 'input', r: hiderRound.n, s: 2, x: 'far', y: 0 });
+  hider.send('not json');
+  hider.send({ t: 'teleport', x: 1, y: 1 });
+  const snap = await hider.next('snap', (s) => (s.you?.s ?? 0) >= 1);
+  const moved = Math.hypot(snap.you!.x - hiderRound.you!.x, snap.you!.y - hiderRound.you!.y);
+  assert.ok(moved <= 3.2, `moved ${moved} from one input`);
+  await Promise.all(clients.map((c) => c.close()));
+});
+
+test('joining a missing room or a full room is refused', async () => {
+  const lost = await Client.connect();
+  lost.send({ t: 'join', code: 'ZZZZ', name: 'Lost' });
+  assert.equal((await lost.next('error')).code, 'not-found');
+  await lost.close();
+
+  const { code, clients } = await makeRoom(['A', 'B', 'C', 'D', 'E', 'F']);
+  const extra = await Client.connect();
+  extra.send({ t: 'join', code, name: 'G' });
+  assert.equal((await extra.next('error')).code, 'full');
+  await extra.close();
+  await Promise.all(clients.map((c) => c.close()));
+});
+
+test('host departure hands over the room; seeker departure ends the round', async () => {
+  const { clients } = await makeRoom(['Ann', 'Bob', 'Cat']);
+  const [a, b, c] = clients;
+  const ids = await Promise.all(clients.map(async (cl) => (await cl.next('welcome')).id));
+  b.clear();
+  await a.close();
+  const room = await b.next('room', (m) => m.players.length === 2);
+  assert.equal(room.hostId, ids[1]);
+
+  b.send({ t: 'start' });
+  const round = await b.next('round');
+  await c.next('round');
+  const seeker = round.seekerId === ids[1] ? b : c;
+  const other = seeker === b ? c : b;
+  other.clear();
+  await seeker.close();
+  const end = await other.next('end');
+  assert.equal(end.reason, 'seeker-left');
+  const back = await other.next('room', (m) => m.status === 'lobby', 3000);
+  assert.equal(back.players.length, 1);
+  await other.close();
+});
+
+async function roomsSettleTo(count: number): Promise<void> {
+  for (let i = 0; i < 100 && server.roomCount() !== count; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(server.roomCount(), count);
+}
+
+test('rooms are removed when the last human leaves', async () => {
+  await roomsSettleTo(0); // Earlier tests' rooms close as their sockets finish closing.
+  const { clients } = await makeRoom(['Solo']);
+  clients[0].send({ t: 'addBot' });
+  await clients[0].next('room', (m) => m.players.length === 2);
+  assert.equal(server.roomCount(), 1);
+  await clients[0].close();
+  await roomsSettleTo(0);
+});
+
+test('late joiners wait for the next round', async () => {
+  const { code, clients } = await makeRoom(['Ann', 'Bob']);
+  clients[0].send({ t: 'start' });
+  await clients[0].next('round');
+  const late = await Client.connect();
+  late.send({ t: 'join', code, name: 'Late' });
+  const welcome = await late.next('welcome');
+  const room = await late.next('room');
+  assert.equal(room.status, 'playing');
+  assert.equal(room.players.find((p) => p.id === welcome.id)!.waiting, true);
+  const next = await late.next('round', () => true, 6000);
+  assert.equal(next.n, 2);
+  assert.ok(next.you);
+  await Promise.all([...clients, late].map((c) => c.close()));
+});
+
+test('message floods close the connection', async () => {
+  const c = await Client.connect();
+  for (let i = 0; i < 400; i++) c.send({ t: 'ping', c: i });
+  await c.closed;
+});
