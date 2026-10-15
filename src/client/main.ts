@@ -370,7 +370,7 @@ function buildFrame(s: Session | null, now: number, dt: number, alpha: number): 
     ripples: [],
     reducedMotion: reduced,
   };
-  if (!s || s.status !== 'playing' || !s.maze || !s.participating) return frame;
+  if (!s || s.status !== 'playing' || !s.maze) return frame;
 
   const phase = s.phaseAt();
   const t = s.serverNow() - s.roundStart;
@@ -389,7 +389,7 @@ function buildFrame(s: Session | null, now: number, dt: number, alpha: number): 
   const remotes = s.remotePositions();
   for (const [id, p] of remotes) if (id !== s.spectating || phase === 'ended') frame.others.push(draw(id, p.x, p.y));
 
-  if (!s.caught) {
+  if (s.participating && !s.caught) {
     const p = s.renderPos(alpha, dt);
     frame.self = draw(s.myId, p.x, p.y);
     frame.self.name = '';
@@ -438,7 +438,7 @@ function updateOverlays(s: Session | null, now: number): void {
   const toRelease = s.releaseAt - serverNow;
   const huntLeft = phase === 'hunt' ? s.phaseEnd - serverNow : phase === 'ended' ? 0 : s.timings.hunt;
 
-  let role = 'Waiting';
+  let role = 'Watching';
   if (s.participating) role = s.caught ? 'Caught' : s.isSeeker ? 'Seeker' : 'Hider';
   ui.setHud({
     role,
@@ -449,8 +449,10 @@ function updateOverlays(s: Session | null, now: number): void {
   });
 
   let banner = '';
-  if (!s.participating) {
-    banner = "Round in progress — you'll join the next one";
+  if (phase === 'ended') {
+    if (s.lastEnd) ui.setResultFooter(nextRoundText(s.lastEnd.next));
+  } else if (!s.participating) {
+    banner = "Watching the seeker — you'll play from the next round";
   } else if (phase === 'reveal' || phase === 'fade') {
     const secs = Math.max(1, Math.ceil(toRelease / 1000));
     countdown(secs, 3);
@@ -470,8 +472,6 @@ function updateOverlays(s: Session | null, now: number): void {
     countdown(Math.ceil(huntLeft / 1000), 5);
     if (now < releaseShownUntil) banner = s.isSeeker ? 'Go! Find them.' : 'The seeker is loose';
     else if (s.caught) banner = 'Caught — watching the seeker';
-  } else if (phase === 'ended' && s.lastEnd) {
-    ui.setResultFooter(nextRoundText(s.lastEnd.next));
   }
   ui.setBanner(banner);
 

@@ -289,17 +289,21 @@ test('rooms are removed when the last human leaves', async () => {
   await roomsSettleTo(0);
 });
 
-test('late joiners wait for the next round', async () => {
+test('late joiners watch until the next round', async () => {
   const { code, clients } = await makeRoom(['Ann', 'Bob']);
   clients[0].send({ t: 'start' });
-  await clients[0].next('round');
+  const first = await clients[0].next('round');
   const late = await Client.connect();
   late.send({ t: 'join', code, name: 'Late' });
   const welcome = await late.next('welcome');
   const room = await late.next('room');
   assert.equal(room.status, 'playing');
   assert.equal(room.players.find((p) => p.id === welcome.id)!.waiting, true);
-  const next = await late.next('round', () => true, 6000);
+  const watching = await late.next('round');
+  assert.equal(watching.n, 1);
+  assert.equal(watching.you, null);
+  assert.equal((await late.next('snap')).view, first.seekerId);
+  const next = await late.next('round', (m) => m.n === 2, 6000);
   assert.equal(next.n, 2);
   assert.ok(next.you);
   await Promise.all([...clients, late].map((c) => c.close()));

@@ -155,6 +155,8 @@ export class GameRoom {
     if (!this.hostId) this.hostId = p.id;
     sink.send(this.welcomeMsg(p));
     this.broadcastRoom();
+    // Mid-round: they watch through the seeker's eyes until the next round starts.
+    this.catchUp(p);
     return p.id;
   }
 
@@ -192,10 +194,7 @@ export class GameRoom {
     p.seq = 0; // The new connection numbers its inputs from scratch.
     sink.send(this.welcomeMsg(p));
     this.broadcastRoom();
-    if (this.maze && p.inRound) sink.send(this.roundMsg(p, this.maze.toData()));
-    // The latest state straight away, so the client knows the server clock before it draws.
-    this.sendSnapshots(this.clock(), p);
-    if (this.phase === 'ended' && this.lastEnd) sink.send(this.lastEnd);
+    this.catchUp(p);
     return p.id;
   }
 
@@ -459,6 +458,17 @@ export class GameRoom {
     }
   }
 
+  /**
+   * Brings a player who arrives mid-round up to date: the round, the latest state straight away
+   * (so the client knows the server clock before it draws), and the result if it is over.
+   */
+  private catchUp(p: Player): void {
+    if (!this.maze || !p.sink) return;
+    p.sink.send(this.roundMsg(p, this.maze.toData()));
+    this.sendSnapshots(this.clock(), p);
+    if (this.phase === 'ended' && this.lastEnd) p.sink.send(this.lastEnd);
+  }
+
   /** Removes players whose connection dropped and who did not come back in time. */
   private expireAway(now: number): void {
     for (const p of this.players.values()) {
@@ -646,14 +656,17 @@ export class GameRoom {
     for (const p of this.players.values()) p.sink?.send(msg);
   }
 
-  /** Where `p` is now: their spawn at the start of a round, or wherever they were when resuming. */
+  /**
+   * Where `p` is now: their spawn at the start of a round, or wherever they were when resuming.
+   * Players waiting for the next round get the maze but no position.
+   */
   private roundMsg(p: Player, maze: MazeData): RoundMsg {
     const msg: RoundMsg = {
       t: 'round',
       n: this.round,
       maze,
       seekerId: this.seekerId,
-      you: { x: p.pos.x, y: p.pos.y },
+      you: p.inRound ? { x: p.pos.x, y: p.pos.y } : null,
       start: this.roundStart,
       timings: { reveal: this.timings.revealMs, fade: this.timings.fadeMs, hunt: this.timings.huntMs },
     };
@@ -675,22 +688,21 @@ export class GameRoom {
       if (!p.sink || (to && p !== to)) continue;
       const o: EntityState[] = [];
       const msg: ServerMsg = { t: 'snap', st: now, ph: this.phase, pe: this.phaseEnd, alive, total: hiders.length, o };
-      if (p.inRound) {
-        if (!p.caught) msg.you = { x: p.pos.x, y: p.pos.y, s: p.seq };
-        if (this.phase === 'ended') {
-          for (const q of participants) if (q !== p && !q.caught) o.push(entity(q));
-        } else {
-          // Caught players watch the seeker; everyone else sees only what their own light reveals.
-          const viewer = p.caught ? seeker : p;
-          if (viewer && viewer !== p) {
-            msg.view = viewer.id;
-            o.push(entity(viewer));
-          }
-          if (viewer) {
-            for (const q of participants) {
-              if (q === p || q === viewer || q.caught) continue;
-              if (canSee(maze, viewer.pos, q.pos, SEND_RANGE)) o.push(entity(q));
-            }
+      if (p.inRound && !p.caught) msg.you = { x: p.pos.x, y: p.pos.y, s: p.seq };
+      if (this.phase === 'ended') {
+        for (const q of participants) if (q !== p && !q.caught) o.push(entity(q));
+      } else {
+        // Caught players, and those waiting for the next round, watch the seeker. Everyone else
+        // sees only what their own light reveals.
+        const viewer = p.inRound && !p.caught ? p : seeker;
+        if (viewer && viewer !== p) {
+          msg.view = viewer.id;
+          o.push(entity(viewer));
+        }
+        if (viewer) {
+          for (const q of participants) {
+            if (q === p || q === viewer || q.caught) continue;
+            if (canSee(maze, viewer.pos, q.pos, SEND_RANGE)) o.push(entity(q));
           }
         }
       }

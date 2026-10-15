@@ -419,16 +419,21 @@ test('players who are away when a round starts are never picked to seek', () => 
   }
 });
 
-test('players joining mid-round wait for the next round without seeing anyone', () => {
-  const { h, players } = startGame();
+test('players joining mid-round watch the seeker until the next round', () => {
+  const { h, players, seeker } = startGame();
   h.toHunt();
   const late = h.join('Late');
-  assert.equal(late.inbox.all('round').length, 0);
+  const round = late.inbox.last('round')!;
+  assert.equal(round.you, null, 'no place in this round');
+  assert.deepEqual(round.maze, players[0].inbox.last('round')!.maze);
   const info = late.inbox.last('room')!.players.find((p) => p.id === late.id)!;
   assert.equal(info.waiting, true);
   h.advance(100);
-  for (const snap of late.inbox.all('snap')) {
-    assert.deepEqual(snap.o, []);
+  const snaps = late.inbox.all('snap');
+  assert.ok(snaps.length > 0);
+  for (const snap of snaps) {
+    assert.equal(snap.view, seeker.id);
+    assert.equal(snap.o[0].i, seeker.id);
     assert.equal(snap.you, undefined);
   }
   h.advance(90_000 + h.room.timings.intermissionMs);
