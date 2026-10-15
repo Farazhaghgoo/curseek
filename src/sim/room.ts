@@ -31,6 +31,7 @@ import {
 import { mulberry32, randInt, randomSeed, shuffle, type Rng } from '../shared/rng';
 import { chooseSpawns } from '../shared/spawn';
 import { canSee, lineOfSight } from '../shared/visibility';
+import { BOT_SIGHT, BotBrain } from './bot';
 
 export interface Sink {
   send(msg: ServerMsg): void;
@@ -52,6 +53,8 @@ interface Player {
   name: string;
   color: string;
   sink: Sink | null;
+  /** Present for bots: decides the bot's movement each tick. */
+  brain: BotBrain | null;
   isBot: boolean;
   order: number;
   inRound: boolean;
@@ -470,12 +473,37 @@ export class GameRoom {
   }
 
   private fixedTick(): void {
+    if (!this.isLive()) return;
+    this.stepBots();
     if (this.phase !== 'hunt') return;
     if (this.lastTick >= this.nextHintAt) {
       this.nextHintAt += this.timings.hintEveryMs;
       this.sendHint();
     }
     this.checkCaptures();
+  }
+
+  /** Bots move through exactly the same speed cap and collision code as human input. */
+  private stepBots(): void {
+    const maze = this.maze;
+    if (!maze) return;
+    for (const p of this.players.values()) {
+      if (!p.brain || !p.inRound || p.caught) continue;
+      const seen: Vec[] = [];
+      for (const q of this.players.values()) {
+        if (q === p || !q.inRound || q.caught || q.role === p.role) continue;
+        if (canSee(maze, p.pos, q.pos, BOT_SIGHT)) seen.push({ ...q.pos });
+      }
+      const canMove = this.canMove(p);
+      const want = p.brain.step({ maze, now: this.lastTick, role: p.role, pos: { ...p.pos }, canMove, seen, hint: p.hint });
+      if (!canMove) continue;
+      const step = clampStep(want.x, want.y, MAX_STEP);
+      moveCircle(maze, p.pos, step.x, step.y);
+      if (this.phase === 'hunt') {
+        this.checkCaptures();
+        if (!this.isLive()) return;
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------------------
@@ -489,6 +517,7 @@ export class GameRoom {
       name,
       color,
       sink,
+      brain: sink === null ? new BotBrain(mulberry32(randInt(this.rng, 2 ** 31))) : null,
       isBot: sink === null,
       order: this.nextOrder++,
       inRound: false,
