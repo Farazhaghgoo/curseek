@@ -229,6 +229,16 @@ test('the seeker gets a coarse direction hint every 12 seconds', () => {
   assert.ok(Math.abs(a / (Math.PI / 8) - Math.round(a / (Math.PI / 8))) < 1e-9, 'quantised to 16 directions');
 });
 
+test('in the final 30 seconds the seeker gets a hint every 4 seconds', () => {
+  const { h, seeker } = startGame();
+  h.toHunt();
+  h.advance(60_500);
+  const before = seeker.inbox.all('hint').length;
+  assert.equal(before, 5, 'every 12 s until then');
+  h.advance(12_000);
+  assert.equal(seeker.inbox.all('hint').length - before, 3);
+});
+
 test('the round ends cleanly when the seeker disconnects', () => {
   const { h, seeker, hiders } = startGame(['Ann', 'Bob', 'Cat']);
   h.toHunt();

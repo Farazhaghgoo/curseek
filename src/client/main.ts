@@ -1,7 +1,7 @@
 // App controller: wires the UI, transport, session, input and renderer together and runs
 // the frame loop (fixed 60 Hz input ticks, rendering every animation frame).
 
-import { DEFAULT_TIMINGS, MAX_PLAYERS, MAX_STEP, MIN_PLAYERS, TICK_MS } from '../shared/constants';
+import { DEFAULT_TIMINGS, FINAL_STRETCH_MS, MAX_PLAYERS, MAX_STEP, MIN_PLAYERS, TICK_MS } from '../shared/constants';
 import { Maze } from '../shared/maze';
 import { normaliseRoomCode, type PlayerInfo } from '../shared/protocol';
 import { mulberry32, randomSeed } from '../shared/rng';
@@ -29,6 +29,7 @@ let ripples: (Ripple & { start: number })[] = [];
 let hint: { angle: number; start: number } | null = null;
 let releaseShownUntil = 0;
 let lastCountdown = 0;
+let finalStretchShown = false;
 /** Set while trying to take back our place after the connection dropped. */
 let reconnecting = false;
 /** Bumped whenever the player leaves, so a rejoin still in flight knows to give up. */
@@ -212,6 +213,7 @@ const listener: SessionListener = {
     ripples = [];
     hint = null;
     lastCountdown = 0;
+    finalStretchShown = false;
     if (s.participating && !s.caught) {
       sound.play('round');
       ui.toast(s.isSeeker ? 'You are the seeker' : 'You are hiding');
@@ -470,6 +472,10 @@ function updateOverlays(s: Session | null, now: number): void {
       if (late < 1000) sound.play('release');
     }
     countdown(Math.ceil(huntLeft / 1000), 5);
+    if (!finalStretchShown && huntLeft <= FINAL_STRETCH_MS) {
+      finalStretchShown = true;
+      ui.toast(s.isSeeker ? 'Final stretch: hints every few seconds' : 'Final stretch: the seeker gets more hints');
+    }
     if (s.playerInfo(s.seekerId)?.away) banner = 'The seeker lost connection — the clock is paused';
     else if (now < releaseShownUntil) banner = s.isSeeker ? 'Go! Find them.' : 'The seeker is loose';
     else if (s.caught) banner = 'Caught — watching the seeker';

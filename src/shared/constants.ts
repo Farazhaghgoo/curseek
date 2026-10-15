@@ -48,5 +48,9 @@ export const DEFAULT_TIMINGS: Timings = {
   reconnectGraceMs: 10000,
 };
 
+/** The end of the hunt, when the seeker gets direction hints much more often. */
+export const FINAL_STRETCH_MS = 30_000;
+export const FINAL_HINT_EVERY_MS = 4000;
+
 export const SEEKER_COLOR = '#ff4d6d';
 export const PLAYER_COLORS = ['#5ef2ff', '#b6ff5e', '#ffd75e', '#c08bff', '#ff9ad5', '#7cffc4'];

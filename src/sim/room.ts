@@ -5,6 +5,8 @@
 import {
   CATCH_DISTANCE,
   DEFAULT_TIMINGS,
+  FINAL_HINT_EVERY_MS,
+  FINAL_STRETCH_MS,
   MAX_PLAYERS,
   MAX_SPEED,
   MAX_STEP,
@@ -587,8 +589,12 @@ export class GameRoom {
     if (!this.isLive()) return;
     this.stepBots();
     if (this.phase !== 'hunt') return;
+    // In the final stretch hints come faster, so hiders cannot simply sit out the clock.
+    const finalStretch = this.phaseEnd - this.lastTick <= FINAL_STRETCH_MS;
+    const every = finalStretch ? Math.min(FINAL_HINT_EVERY_MS, this.timings.hintEveryMs) : this.timings.hintEveryMs;
+    this.nextHintAt = Math.min(this.nextHintAt, this.lastTick + every);
     if (this.lastTick >= this.nextHintAt) {
-      this.nextHintAt += this.timings.hintEveryMs;
+      this.nextHintAt += every;
       this.sendHint();
     }
     this.checkCaptures();
