@@ -3,10 +3,86 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
     <title>curseek</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2305060a'/%3E%3Cpath d='M9 5v19l5-4.5 3.5 7.5 3-1.4-3.4-7.3H24z' fill='%235ef2ff'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
-    <canvas id="view"></canvas>
+    <canvas id="view" aria-label="Maze"></canvas>
+
+    <header id="hud" class="hud" hidden>
+      <div class="hud-pill">
+        <span id="hud-role" class="hud-role"></span>
+        <span class="hud-sep" aria-hidden="true"></span>
+        <span id="hud-time" class="hud-time">1:30</span>
+        <span class="hud-sep" aria-hidden="true"></span>
+        <span id="hud-hiders"></span>
+      </div>
+    </header>
+
+    <div class="corner">
+      <button id="btn-sound" class="icon-btn" type="button" aria-pressed="true" title="Sound on (M)" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path class="spk" d="M4 9h4l5-4v14l-5-4H4z" /><path class="wave" d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" /><path class="mute" d="M16 9l6 6M22 9l-6 6" /></svg>
+        <span class="sr-only">Toggle sound</span>
+      </button>
+      <button id="btn-leave" class="icon-btn" type="button" title="Leave" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        <span class="sr-only">Leave</span>
+      </button>
+    </div>
+
+    <div id="banner" class="banner" aria-live="polite"></div>
+    <div id="prompt" class="prompt" hidden></div>
+    <div id="toasts" class="toasts" aria-live="polite"></div>
+    <section id="result" class="result" hidden aria-live="polite"></section>
+
+    <main id="landing" class="panel">
+      <h1 class="logo">curseek</h1>
+      <p class="tagline">Hide-and-seek for cursors, in the dark.</p>
+      <label class="field">
+        <span>Nickname</span>
+        <input id="name" maxlength="16" autocomplete="nickname" spellcheck="false" placeholder="Your name" />
+      </label>
+      <div class="row">
+        <button id="btn-create" class="primary" type="button">Create room</button>
+        <button id="btn-solo" type="button">Play solo</button>
+      </div>
+      <form id="join-form" class="row join">
+        <input id="code" maxlength="6" autocomplete="off" spellcheck="false" placeholder="Room code" aria-label="Room code" />
+        <button id="btn-join" type="submit">Join room</button>
+      </form>
+      <p id="landing-error" class="error" role="alert"></p>
+      <details class="howto">
+        <summary>How to play</summary>
+        <ul>
+          <li>One player is the <b class="seek">seeker</b>, the rest are hiders.</li>
+          <li>The maze is shown for 3 seconds, then fades to darkness. Memorize it.</li>
+          <li>Hiders start moving at once; the seeker waits until the lights are out.</li>
+          <li>You only see a small area around you. Walls block sight.</li>
+          <li>The seeker catches hiders by touching them. Survive 90 seconds to win.</li>
+          <li>Move with the mouse (click to capture it, <kbd>Esc</kbd> to release) or <kbd>WASD</kbd> / arrows.</li>
+        </ul>
+      </details>
+    </main>
+
+    <section id="lobby" class="panel" hidden>
+      <p class="label">Room code</p>
+      <div id="lobby-code" class="code"></div>
+      <div class="invite">
+        <input id="invite-link" readonly aria-label="Invite link" />
+        <button id="btn-copy" type="button">Copy</button>
+      </div>
+      <ul id="lobby-players" class="players"></ul>
+      <div class="row host-only">
+        <button id="btn-add-bot" type="button">Add bot</button>
+        <button id="btn-remove-bot" type="button">Remove bot</button>
+      </div>
+      <button id="btn-start" class="primary host-only" type="button">Start</button>
+      <p id="lobby-note" class="note"></p>
+      <button id="btn-lobby-leave" class="link" type="button">Leave room</button>
+    </section>
+
     <script type="module" src="/build/app.js"></script>
   </body>
 </html>
