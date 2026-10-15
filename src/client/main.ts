@@ -458,6 +458,8 @@ function updateOverlays(s: Session | null, now: number): void {
   let banner = '';
   if (phase === 'ended') {
     if (s.lastEnd) ui.setResultFooter(nextRoundText(s.lastEnd.next));
+  } else if (phase === 'hunt' && s.playerInfo(s.seekerId)?.away) {
+    banner = 'The seeker lost connection — the clock is paused';
   } else if (!s.participating) {
     banner = "Watching the seeker — you'll play from the next round";
   } else if (phase === 'reveal' || phase === 'fade') {
@@ -481,8 +483,7 @@ function updateOverlays(s: Session | null, now: number): void {
       finalStretchShown = true;
       ui.toast(s.isSeeker ? 'Final stretch: hints every few seconds' : 'Final stretch: the seeker gets more hints');
     }
-    if (s.playerInfo(s.seekerId)?.away) banner = 'The seeker lost connection — the clock is paused';
-    else if (now < releaseShownUntil) banner = s.isSeeker ? 'Go! Find them.' : 'The seeker is loose';
+    if (now < releaseShownUntil) banner = s.isSeeker ? 'Go! Find them.' : 'The seeker is loose';
     else if (s.caught) banner = 'Caught — watching the seeker';
   }
   ui.setBanner(banner);
