@@ -32,6 +32,8 @@ export interface PlayerInfo {
   waiting: boolean;
   /** Lost connection; their place is held for a few seconds. */
   away: boolean;
+  /** Points so far: one per catch as seeker, one per round survived as a hider. */
+  score: number;
 }
 
 /** A player position in a snapshot. */

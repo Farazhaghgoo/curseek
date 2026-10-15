@@ -297,7 +297,10 @@ function showResult(info: EndInfo): void {
   }
   if (info.survivors.length > 0 && info.winner) lines.push({ text: `Survived: ${info.survivors.map(name).join(', ')}` });
   if (info.caught.length > 0) lines.push({ text: `Caught: ${info.caught.map(name).join(', ')}` });
-  ui.showResult(title, info.winner === 'seeker', lines, nextRoundText(info.next));
+  const board = [...s.players]
+    .sort((a, b) => b.score - a.score)
+    .map((p) => ({ name: p.name, color: p.color, score: p.score, you: p.id === s.myId }));
+  ui.showResult(title, info.winner === 'seeker', lines, nextRoundText(info.next), board);
 }
 
 function nextRoundText(next: number | null): string {

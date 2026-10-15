@@ -81,6 +81,8 @@ interface Player {
   token: string | null;
   /** Clock time their connection dropped, while their place is held for them. */
   awayAt: number | null;
+  /** Points across rounds: one per catch as seeker, one per round survived as a hider. */
+  score: number;
 }
 
 type EndMsg = Extract<ServerMsg, { t: 'end' }>;
@@ -416,6 +418,10 @@ export class GameRoom {
       next,
     };
     this.lastEnd = msg;
+    if (reason === 'time') {
+      for (const p of participants) if (p.role === 'hider' && !p.caught) p.score++;
+    }
+    this.broadcastRoom(); // New scores first, so the results screen can show them.
     for (const p of this.players.values()) p.sink?.send(msg);
   }
 
@@ -518,6 +524,7 @@ export class GameRoom {
   private capture(h: Player, seeker: Player): void {
     const maze = this.maze!;
     h.caught = true;
+    seeker.score++;
     this.caughtOrder.push(h.id);
     for (const p of this.players.values()) {
       if (!p.sink) continue;
@@ -647,6 +654,7 @@ export class GameRoom {
       hint: null,
       token: null,
       awayAt: null,
+      score: 0,
     };
     this.players.set(id, p);
     return p;
@@ -668,6 +676,7 @@ export class GameRoom {
         bot: p.isBot,
         waiting: this.phase !== 'lobby' && !p.inRound,
         away: p.awayAt !== null,
+        score: p.score,
       }));
     return { t: 'room', code: this.code, hostId: this.hostId, status: this.status, players };
   }

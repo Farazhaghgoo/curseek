@@ -270,6 +270,12 @@ kbd {
   opacity: 0.55;
 }
 
+.players .score {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .players .kick {
   padding: 0.1rem 0.45rem;
   font-size: 0.75rem;
@@ -488,6 +494,45 @@ kbd {
 
 .result .you {
   color: var(--text);
+}
+
+.result .board {
+  list-style: none;
+  margin: 0.6rem 0 0.3rem;
+  padding: 0.5rem 0 0;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 0.15rem;
+  font-size: 0.85rem;
+  text-align: left;
+  color: var(--muted);
+}
+
+.result .board:empty {
+  display: none;
+}
+
+.result .board li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.result .board li.you {
+  color: var(--text);
+}
+
+.result .board .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.result .board .pts {
+  margin-left: auto;
+  padding-left: 1rem;
+  font-variant-numeric: tabular-nums;
 }
 
 @media (max-width: 760px) {

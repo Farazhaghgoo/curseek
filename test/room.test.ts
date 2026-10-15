@@ -146,6 +146,21 @@ test('touching a hider catches them; the last capture wins the round for the see
   assert.deepEqual(ends[0], ends[1], 'all clients get the same result');
 });
 
+test('the seeker scores per catch and hiders score for surviving the clock', () => {
+  const { h, seeker, hiders, players } = startGame(['Ann', 'Bob', 'Cat']);
+  const [caught, free] = hiders;
+  h.toHunt();
+  const s = h.room.positionOf(seeker.id)!;
+  h.room.placePlayer(caught.id, s.x + 5, s.y);
+  h.advance(20);
+  h.advance(90_000);
+  assert.equal(players[0].inbox.last('end')!.reason, 'time');
+  const scores = Object.fromEntries(players[0].inbox.last('room')!.players.map((p) => [p.id, p.score]));
+  assert.deepEqual(scores, { [seeker.id]: 1, [caught.id]: 0, [free.id]: 1 });
+  const msgs = players[0].inbox.messages;
+  assert.equal(msgs[msgs.findIndex((m) => m.t === 'end') - 1].t, 'room', 'scores arrive before the results');
+});
+
 test('no capture through a wall, even at touching distance', () => {
   const { h, seeker, hiders } = startGame();
   h.toHunt();

@@ -30,6 +30,14 @@ export interface ResultLine {
   emphasis?: boolean;
 }
 
+/** One row of the running scoreboard. */
+export interface ScoreLine {
+  name: string;
+  color: string;
+  score: number;
+  you: boolean;
+}
+
 export class Ui {
   readonly nameInput = $<HTMLInputElement>('name');
   readonly codeInput = $<HTMLInputElement>('code');
@@ -109,6 +117,7 @@ export class Ui {
     $('lobby-code').textContent = v.code;
     $<HTMLInputElement>('invite-link').value = v.link;
     const list = $('lobby-players');
+    const scored = v.players.some((p) => p.score > 0);
     list.replaceChildren(
       ...v.players.map((p) => {
         const li = document.createElement('li');
@@ -122,6 +131,7 @@ export class Ui {
         tag.textContent = p.bot ? 'bot' : p.away ? 'away' : p.id === v.hostId ? 'host' : '';
         li.classList.toggle('away', p.away);
         li.append(dot, name, tag);
+        if (scored) li.append(scoreText('score', p.score));
         if (v.isHost && p.id !== v.myId) {
           const kick = document.createElement('button');
           kick.type = 'button';
@@ -192,7 +202,7 @@ export class Ui {
     setTimeout(() => el.remove(), 3100);
   }
 
-  showResult(title: string, seekerWon: boolean, lines: ResultLine[], footer: string): void {
+  showResult(title: string, seekerWon: boolean, lines: ResultLine[], footer: string, board: ScoreLine[]): void {
     const h = document.createElement('h2');
     h.textContent = title;
     h.classList.toggle('seeker', seekerWon);
@@ -202,10 +212,26 @@ export class Ui {
       if (l.emphasis) p.className = 'you';
       return p;
     });
+    const ol = document.createElement('ol');
+    ol.className = 'board';
+    ol.setAttribute('aria-label', 'Scores');
+    ol.replaceChildren(
+      ...board.map((b) => {
+        const li = document.createElement('li');
+        li.classList.toggle('you', b.you);
+        const dot = document.createElement('span');
+        dot.className = 'dot';
+        dot.style.color = b.color;
+        const name = document.createElement('span');
+        name.textContent = b.name;
+        li.append(dot, name, scoreText('pts', b.score));
+        return li;
+      }),
+    );
     const foot = document.createElement('p');
     foot.id = 'result-footer';
     foot.textContent = footer;
-    this.result.replaceChildren(h, ...ps, foot);
+    this.result.replaceChildren(h, ...ps, ol, foot);
     this.result.hidden = false;
   }
 
@@ -233,4 +259,11 @@ export class Ui {
       this.toast('Press Ctrl+C to copy the link');
     }
   }
+}
+
+function scoreText(className: string, score: number): HTMLElement {
+  const el = document.createElement('span');
+  el.className = className;
+  el.textContent = `${score} ${score === 1 ? 'pt' : 'pts'}`;
+  return el;
 }
