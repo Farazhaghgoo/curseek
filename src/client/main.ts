@@ -5,6 +5,7 @@ import { MAX_PLAYERS, MAX_STEP, MIN_PLAYERS, TICK_MS } from '../shared/constants
 import { Maze } from '../shared/maze';
 import { normaliseRoomCode } from '../shared/protocol';
 import { mulberry32, randomSeed } from '../shared/rng';
+import { Sound } from './audio';
 import { Input } from './input';
 import { Renderer, type DrawPlayer, type Frame, type Ripple } from './render';
 import { Session, type EndInfo, type SessionListener } from './session';
@@ -17,6 +18,7 @@ const canvas = document.getElementById('view') as HTMLCanvasElement;
 const renderer = new Renderer(canvas);
 const input = new Input(canvas);
 const ui = new Ui();
+const sound = new Sound();
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 const ambientMaze = Maze.generate(mulberry32(randomSeed()));
 
@@ -24,9 +26,11 @@ let session: Session | null = null;
 let ripples: (Ripple & { start: number })[] = [];
 let hint: { angle: number; start: number } | null = null;
 let releaseShownUntil = 0;
+let lastCountdown = 0;
 
 renderer.setMaze(ambientMaze);
 ui.showLanding();
+ui.setSound(sound.enabled);
 ui.nameInput.value = storageGet(NAME_KEY) ?? '';
 const roomParam = new URLSearchParams(location.search).get('room');
 if (roomParam) ui.codeInput.value = normaliseRoomCode(roomParam);
@@ -40,18 +44,30 @@ function rememberName(name: string): string {
   return name || 'Player';
 }
 
-ui.onSolo = (name) => begin(openLocalGame(rememberName(name)));
+ui.onSolo = (name) => {
+  sound.unlock();
+  begin(openLocalGame(rememberName(name)));
+};
 
 ui.onCreate = (name) => connect((t) => t.send({ t: 'create', name: rememberName(name) }));
 
 ui.onJoin = (name, code) => connect((t) => t.send({ t: 'join', name: rememberName(name), code: normaliseRoomCode(code) }));
 
-ui.onStart = () => session?.send({ t: 'start' });
+ui.onStart = () => {
+  sound.unlock();
+  session?.send({ t: 'start' });
+};
 ui.onAddBot = () => session?.send({ t: 'addBot' });
 ui.onRemoveBot = () => session?.send({ t: 'removeBot' });
 ui.onLeave = () => leave();
+ui.onToggleSound = () => ui.setSound(sound.toggle());
+
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'KeyM' && !(e.target instanceof HTMLInputElement)) ui.setSound(sound.toggle());
+});
 
 async function connect(first: (t: Transport) => void): Promise<void> {
+  sound.unlock();
   ui.setBusy(true);
   ui.showError('');
   try {
@@ -119,7 +135,9 @@ const listener: SessionListener = {
     ui.hideResult();
     ripples = [];
     hint = null;
+    lastCountdown = 0;
     if (s.participating) {
+      sound.play('round');
       ui.toast(s.isSeeker ? 'You are the seeker' : 'You are hiding');
     }
   },
@@ -128,10 +146,13 @@ const listener: SessionListener = {
     const name = s.playerInfo(msg.id)?.name ?? 'Someone';
     if (msg.id === s.myId) {
       ui.toast(`Caught by ${s.playerInfo(msg.by)?.name ?? 'the seeker'}`);
+      sound.play('caught');
     } else if (s.isSeeker) {
       ui.toast(`You caught ${name}`);
+      sound.play('catch');
     } else {
       ui.toast(`${name} was caught`);
+      sound.play('otherCaught');
     }
     if (msg.x !== undefined && msg.y !== undefined) {
       ripples.push({ x: msg.x, y: msg.y, color: s.playerInfo(msg.id)?.color ?? '#fff', age: 0, start: performance.now() });
@@ -139,9 +160,15 @@ const listener: SessionListener = {
   },
   hint(angle) {
     hint = { angle, start: performance.now() };
+    sound.play('hint');
   },
   end(info) {
     showResult(info);
+    const s = session!;
+    if (s.participating && info.winner) {
+      const won = (info.winner === 'seeker') === (info.seekerId === s.myId);
+      sound.play(won ? 'win' : 'lose');
+    }
   },
   error(msg) {
     leave(msg);
@@ -186,6 +213,7 @@ function nextRoundText(next: number | null): string {
 // Pointer lock
 
 canvas.addEventListener('click', () => {
+  sound.unlock();
   if (session?.status === 'playing' && session.participating) input.requestLock();
 });
 
@@ -287,6 +315,14 @@ function buildFrame(s: Session | null, now: number, dt: number, alpha: number): 
   return frame;
 }
 
+/** Plays a soft tick once per second for the last `from` seconds of a countdown. */
+function countdown(secs: number, from: number): void {
+  if (secs !== lastCountdown) {
+    lastCountdown = secs;
+    if (secs > 0 && secs <= from) sound.play('tick');
+  }
+}
+
 function formatTime(ms: number): string {
   const total = Math.max(0, Math.ceil(ms / 1000));
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
@@ -317,6 +353,7 @@ function updateOverlays(s: Session | null, now: number): void {
     banner = "Round in progress — you'll join the next one";
   } else if (phase === 'reveal' || phase === 'fade') {
     const secs = Math.max(1, Math.ceil(toRelease / 1000));
+    countdown(secs, 3);
     banner = s.isSeeker
       ? `Memorize the maze — you're released in ${secs}`
       : phase === 'reveal'
@@ -324,7 +361,11 @@ function updateOverlays(s: Session | null, now: number): void {
         : `Lights out — seeker released in ${secs}`;
     releaseShownUntil = 0;
   } else if (phase === 'hunt') {
-    if (releaseShownUntil === 0) releaseShownUntil = now + 1800;
+    if (releaseShownUntil === 0) {
+      releaseShownUntil = now + 1800;
+      sound.play('release');
+    }
+    countdown(Math.ceil(huntLeft / 1000), 5);
     if (now < releaseShownUntil) banner = s.isSeeker ? 'Go! Find them.' : 'The seeker is loose';
     else if (s.caught) banner = 'Caught — watching the seeker';
   } else if (phase === 'ended' && s.lastEnd) {
