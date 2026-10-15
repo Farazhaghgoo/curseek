@@ -3,7 +3,7 @@
 
 import { DEFAULT_TIMINGS, MAX_PLAYERS, MAX_STEP, MIN_PLAYERS, TICK_MS } from '../shared/constants';
 import { Maze } from '../shared/maze';
-import { normaliseRoomCode } from '../shared/protocol';
+import { normaliseRoomCode, type PlayerInfo } from '../shared/protocol';
 import { mulberry32, randomSeed } from '../shared/rng';
 import { Sound } from './audio';
 import { Input } from './input';
@@ -33,6 +33,8 @@ let lastCountdown = 0;
 let reconnecting = false;
 /** Bumped whenever the player leaves, so a rejoin still in flight knows to give up. */
 let generation = 0;
+/** The player list as last announced, to tell who dropped out, came back or left. */
+let knownPlayers: PlayerInfo[] | null = null;
 
 renderer.setMaze(ambientMaze);
 ui.showLanding();
@@ -72,6 +74,7 @@ ui.onStart = () => {
 };
 ui.onAddBot = () => session?.send({ t: 'addBot' });
 ui.onRemoveBot = () => session?.send({ t: 'removeBot' });
+ui.onKick = (id) => session?.send({ t: 'kick', id });
 ui.onLeave = () => leave();
 ui.onToggleSound = () => ui.setSound(sound.toggle());
 
@@ -95,6 +98,7 @@ async function connect(first: (t: Transport) => void): Promise<void> {
 function begin(transport: Transport): void {
   session?.leave();
   session = new Session(transport, listener);
+  knownPlayers = null;
 }
 
 function leave(message = ''): void {
@@ -176,6 +180,7 @@ const listener: SessionListener = {
   },
   room() {
     const s = session!;
+    announcePlayerChanges(s);
     if (s.status === 'lobby') {
       input.releaseLock();
       ui.setInGame(false);
@@ -254,6 +259,19 @@ const listener: SessionListener = {
     void rejoin(s.code, s.token, () => leave(reason));
   },
 };
+
+function announcePlayerChanges(s: Session): void {
+  const before = knownPlayers;
+  knownPlayers = s.players;
+  if (!before) return;
+  for (const p of before) {
+    if (p.id === s.myId || p.bot) continue;
+    const now = s.playerInfo(p.id);
+    if (!now) ui.toast(`${p.name} left`);
+    else if (now.away && !p.away) ui.toast(`${p.name} lost connection`);
+    else if (!now.away && p.away) ui.toast(`${p.name} is back`);
+  }
+}
 
 function showResult(info: EndInfo): void {
   const s = session!;
@@ -366,7 +384,7 @@ function buildFrame(s: Session | null, now: number, dt: number, alpha: number): 
 
   const draw = (id: string, x: number, y: number): DrawPlayer => {
     const info = s.playerInfo(id);
-    return { id, x, y, color: info?.color ?? '#fff', name: info?.name ?? '', seeker: id === s.seekerId };
+    return { id, x, y, color: info?.color ?? '#fff', name: info?.name ?? '', seeker: id === s.seekerId, away: info?.away };
   };
   const remotes = s.remotePositions();
   for (const [id, p] of remotes) if (id !== s.spectating || phase === 'ended') frame.others.push(draw(id, p.x, p.y));

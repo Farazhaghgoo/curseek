@@ -19,7 +19,9 @@ export type ClientMsg =
   /** Takes back a place held after a dropped connection, with the token from 'welcome'. */
   | { t: 'resume'; code: string; token: string }
   /** Leaves for good. Just closing the connection holds the place for a while instead. */
-  | { t: 'leave' };
+  | { t: 'leave' }
+  /** Host only: removes a player from the room. */
+  | { t: 'kick'; id: string };
 
 export interface PlayerInfo {
   id: string;
@@ -28,6 +30,8 @@ export interface PlayerInfo {
   bot: boolean;
   /** Joined during a round; plays from the next one. */
   waiting: boolean;
+  /** Lost connection; their place is held for a few seconds. */
+  away: boolean;
 }
 
 /** A player position in a snapshot. */
@@ -99,7 +103,7 @@ export type ServerMsg =
   | { t: 'pong'; c: number; s: number }
   | { t: 'error'; code: ErrorCode; msg: string };
 
-export type ErrorCode = 'not-found' | 'full' | 'busy' | 'bad-request' | 'expired' | 'replaced';
+export type ErrorCode = 'not-found' | 'full' | 'busy' | 'bad-request' | 'expired' | 'replaced' | 'kicked';
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const isInt = (v: unknown): v is number => Number.isSafeInteger(v);
@@ -119,6 +123,8 @@ export function parseClientMsg(data: unknown): ClientMsg | null {
       return typeof m.code === 'string' && m.code.length <= 12 && typeof m.token === 'string' && m.token.length <= 64
         ? { t: 'resume', code: m.code, token: m.token }
         : null;
+    case 'kick':
+      return typeof m.id === 'string' && m.id.length <= 16 ? { t: 'kick', id: m.id } : null;
     case 'start':
     case 'addBot':
     case 'removeBot':

@@ -266,6 +266,23 @@ kbd {
   color: var(--muted);
 }
 
+.players li.away {
+  opacity: 0.55;
+}
+
+.players .kick {
+  padding: 0.1rem 0.45rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  border-color: transparent;
+  background: none;
+}
+
+.players .kick:hover:not(:disabled) {
+  color: #ff4d6d;
+  border-color: rgba(255, 77, 109, 0.5);
+}
+
 .note {
   margin: 0;
   text-align: center;

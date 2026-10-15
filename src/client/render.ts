@@ -12,6 +12,8 @@ export interface DrawPlayer {
   color: string;
   name: string;
   seeker: boolean;
+  /** Lost connection: drawn faded until they are back. */
+  away?: boolean;
 }
 
 export interface Ripple {
@@ -211,14 +213,14 @@ export class Renderer {
 
   private drawPlayer(ctx: CanvasRenderingContext2D, p: DrawPlayer, f: Frame, alpha: number): void {
     ctx.save();
-    ctx.globalAlpha = alpha;
+    ctx.globalAlpha = p.away ? alpha * 0.4 : alpha;
     if (p.seeker) drawSeeker(ctx, p.x, p.y, p.color, f.time, f.reducedMotion, this.dpr);
     else drawArrow(ctx, p.x, p.y, p.color, this.dpr);
     if (p.name && p !== f.self) {
       ctx.font = `${11 / this.scale}px system-ui, sans-serif`;
       ctx.textAlign = 'center';
       ctx.fillStyle = 'rgba(220, 230, 255, 0.75)';
-      ctx.fillText(p.name, p.x, p.y + PLAYER_RADIUS + 14 / this.scale);
+      ctx.fillText(p.away ? `${p.name} (away)` : p.name, p.x, p.y + PLAYER_RADIUS + 14 / this.scale);
     }
     ctx.restore();
   }

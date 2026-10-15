@@ -35,7 +35,10 @@ import { BOT_SIGHT, BotBrain } from './bot';
 
 export interface Sink {
   send(msg: ServerMsg): void;
-  /** The player resumed on another connection; the room sends this sink nothing more. */
+  /**
+   * The room is done with this connection: the player resumed on another one, or the host
+   * removed them. Nothing more is sent to it.
+   */
   close?(): void;
 }
 
@@ -157,16 +160,18 @@ export class GameRoom {
 
   /**
    * A player's connection dropped. Their place is held for `timings.reconnectGraceMs` so a reload
-   * or a brief network outage can resume it: they keep their id, role, position, caught state and
-   * the host role, frozen where they were. If they are not back in time they are removed as if
-   * they had left. The round does not wait for them: while the seeker is away the clock keeps
-   * running and the frozen seeker still catches any hider who touches them.
+   * or a brief network outage can resume it: they keep their id, role, position and caught state,
+   * frozen where they were, and everyone else sees them marked as away. If they are not back in
+   * time they are removed as if they had left. A host keeps the role during a round, but in the
+   * lobby it passes on at once, since nobody else could start the game.
    */
   disconnect(id: string): void {
     const p = this.players.get(id);
     if (!p || p.isBot) return;
     p.sink = null;
     p.awayAt = this.clock();
+    if (this.phase === 'lobby') this.replaceAwayHost();
+    this.broadcastRoom();
   }
 
   /**
@@ -186,7 +191,7 @@ export class GameRoom {
     p.awayAt = null;
     p.seq = 0; // The new connection numbers its inputs from scratch.
     sink.send(this.welcomeMsg(p));
-    sink.send(this.roomMsg());
+    this.broadcastRoom();
     if (this.maze && p.inRound) sink.send(this.roundMsg(p, this.maze.toData()));
     // The latest state straight away, so the client knows the server clock before it draws.
     this.sendSnapshots(this.clock(), p);
@@ -215,10 +220,7 @@ export class GameRoom {
     const p = this.players.get(id);
     if (!p) return;
     this.players.delete(id);
-    if (this.hostId === id) {
-      const next = [...this.players.values()].filter((q) => !q.isBot).sort((a, b) => a.order - b.order)[0];
-      this.hostId = next?.id ?? null;
-    }
+    if (this.hostId === id) this.hostId = this.nextHost();
     if (p.inRound && this.isLive()) this.onParticipantLeft(p);
     this.broadcastRoom();
   }
@@ -243,6 +245,9 @@ export class GameRoom {
         break;
       case 'removeBot':
         if (id === this.hostId && this.phase === 'lobby') this.removeBot();
+        break;
+      case 'kick':
+        if (id === this.hostId && msg.id !== id) this.kick(msg.id);
         break;
       default:
         break;
@@ -416,7 +421,30 @@ export class GameRoom {
       p.inRound = false;
       p.caught = false;
     }
+    this.replaceAwayHost();
     this.broadcastRoom();
+  }
+
+  /** The earliest-joined human, preferring those who are connected. */
+  private nextHost(): string | null {
+    const humans = [...this.players.values()].filter((p) => !p.isBot);
+    humans.sort((a, b) => Number(a.awayAt !== null) - Number(b.awayAt !== null) || a.order - b.order);
+    return humans[0]?.id ?? null;
+  }
+
+  /** In the lobby a missing host would block the start, so someone present takes over. */
+  private replaceAwayHost(): void {
+    const host = this.hostId ? this.players.get(this.hostId) : undefined;
+    if (host && host.awayAt !== null) this.hostId = this.nextHost();
+  }
+
+  /** The host removes a player. A human is told why, and their connection is closed. */
+  private kick(id: string): void {
+    const p = this.players.get(id);
+    if (!p) return;
+    p.sink?.send({ t: 'error', code: 'kicked', msg: 'The host removed you from the room.' });
+    p.sink?.close?.();
+    this.removePlayer(id);
   }
 
   private onParticipantLeft(p: Player): void {
@@ -602,7 +630,14 @@ export class GameRoom {
   private roomMsg(): ServerMsg {
     const players: PlayerInfo[] = [...this.players.values()]
       .sort((a, b) => a.order - b.order)
-      .map((p) => ({ id: p.id, name: p.name, color: p.color, bot: p.isBot, waiting: this.phase !== 'lobby' && !p.inRound }));
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        color: p.color,
+        bot: p.isBot,
+        waiting: this.phase !== 'lobby' && !p.inRound,
+        away: p.awayAt !== null,
+      }));
     return { t: 'room', code: this.code, hostId: this.hostId, status: this.status, players };
   }
 

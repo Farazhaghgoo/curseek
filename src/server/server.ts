@@ -119,11 +119,11 @@ export async function startServer(opts: ServerOptions = {}): Promise<RunningServ
     };
     const sink: Sink = {
       send,
-      // The player resumed on another connection, so this one no longer speaks for them.
+      // Resumed elsewhere or kicked: this connection no longer speaks for the player.
       close: () => {
         room = null;
         playerId = null;
-        ws.close(4000, 'Resumed elsewhere');
+        ws.close(4000, 'Removed from room');
       },
     };
 

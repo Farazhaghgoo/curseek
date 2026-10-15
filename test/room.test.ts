@@ -276,7 +276,9 @@ test('a player who reconnects in time keeps their id, host role, role and positi
   assert.deepEqual(h.room.positionOf(ann.id), spot, 'frozen while away');
   assert.equal(h.room.currentHost, ann.id);
   assert.equal(h.room.currentPhase, 'hunt');
-  assert.deepEqual(bob.inbox.all('room'), [], 'the others are not told they left');
+  const marked = bob.inbox.last('room')!;
+  assert.equal(marked.players.length, 3, 'still in the room');
+  assert.equal(marked.players.find((p) => p.id === ann.id)!.away, true, 'shown to the others as away');
 
   const back = new Inbox();
   assert.equal(h.room.resume(tokenOf(ann.inbox), back), ann.id);
@@ -287,6 +289,7 @@ test('a player who reconnects in time keeps their id, host role, role and positi
   assert.equal(round.seekerId, seeker);
   assert.deepEqual(round.you, spot, 'back where they were, not at a new spawn');
   assert.equal(round.caught, undefined);
+  assert.equal(bob.inbox.last('room')!.players.find((p) => p.id === ann.id)!.away, false, 'and back');
   const snap = back.last('snap')!;
   assert.equal(snap.ph, 'hunt', 'the latest state comes straight away');
   assert.deepEqual({ x: snap.you!.x, y: snap.you!.y }, spot);
@@ -319,21 +322,39 @@ test('the round carries on while the seeker is away, and ends if they do not ret
   assert.equal(h.room.currentPhase, 'reveal', 'the next round starts without them');
 });
 
-test('an absent host keeps the role until the grace period runs out', () => {
+test('a host who drops out in the lobby hands over at once, and is removed if not back in time', () => {
   const h = new Harness();
   const a = h.join('Ann');
   const b = h.join('Bob');
   h.room.disconnect(a.id);
-  h.advance(h.room.timings.reconnectGraceMs - 50);
-  assert.equal(h.room.currentHost, a.id);
-  h.advance(100);
-  assert.equal(h.room.currentHost, b.id);
-  const room = b.inbox.last('room')!;
-  assert.equal(room.hostId, b.id);
+  assert.equal(h.room.currentHost, b.id, 'so the others can start without waiting');
+  h.room.handle(b.id, { t: 'start' });
+  assert.equal(h.room.currentPhase, 'reveal');
+  h.advance(h.room.timings.reconnectGraceMs + 50);
   assert.deepEqual(
-    room.players.map((p) => p.id),
+    b.inbox.last('room')!.players.map((p) => p.id),
     [b.id],
   );
+  assert.equal(b.inbox.last('end')!.reason, 'not-enough-players');
+});
+
+test('the host can remove players; nobody else can', () => {
+  const h = new Harness();
+  const a = h.join('Ann');
+  const b = h.join('Bob');
+  const c = h.join('Cat');
+  h.room.handle(b.id, { t: 'kick', id: c.id });
+  h.room.handle(a.id, { t: 'kick', id: a.id });
+  assert.equal(a.inbox.last('room')!.players.length, 3, 'only the host kicks, and never themselves');
+
+  h.room.handle(a.id, { t: 'kick', id: c.id });
+  assert.equal(c.inbox.last('error')!.code, 'kicked');
+  assert.ok(c.inbox.closed, 'their connection is closed');
+  assert.deepEqual(
+    a.inbox.last('room')!.players.map((p) => p.id),
+    [a.id, b.id],
+  );
+  assert.equal(h.room.resume(tokenOf(c.inbox), new Inbox()), null, 'and they cannot resume');
 });
 
 test('a resume token only works in its own room', () => {

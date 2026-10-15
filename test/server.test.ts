@@ -263,6 +263,17 @@ test('leaving on purpose frees the place at once', async () => {
   await Promise.all([a, b, again].map((c) => c.close()));
 });
 
+test('a kicked player is told why and disconnected', async () => {
+  const { clients } = await makeRoom(['Ann', 'Bob']);
+  const [a, b] = clients;
+  const bId = (await b.next('welcome')).id;
+  a.send({ t: 'kick', id: bId });
+  assert.equal((await b.next('error')).code, 'kicked');
+  await b.closed;
+  await a.next('room', (m) => m.players.length === 1);
+  await a.close();
+});
+
 async function roomsSettleTo(count: number): Promise<void> {
   for (let i = 0; i < 200 && server.roomCount() !== count; i++) await new Promise((r) => setTimeout(r, 10));
   assert.equal(server.roomCount(), count);

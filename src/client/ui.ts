@@ -40,6 +40,7 @@ export class Ui {
   onStart: () => void = () => {};
   onAddBot: () => void = () => {};
   onRemoveBot: () => void = () => {};
+  onKick: (id: string) => void = () => {};
   onLeave: () => void = () => {};
   onToggleSound: () => void = () => {};
 
@@ -118,8 +119,19 @@ export class Ui {
         name.textContent = p.name + (p.id === v.myId ? ' (you)' : '');
         const tag = document.createElement('span');
         tag.className = 'tag';
-        tag.textContent = p.bot ? 'bot' : p.id === v.hostId ? 'host' : '';
+        tag.textContent = p.bot ? 'bot' : p.away ? 'away' : p.id === v.hostId ? 'host' : '';
+        li.classList.toggle('away', p.away);
         li.append(dot, name, tag);
+        if (v.isHost && p.id !== v.myId) {
+          const kick = document.createElement('button');
+          kick.type = 'button';
+          kick.className = 'kick';
+          kick.textContent = '✕';
+          kick.title = `Remove ${p.name}`;
+          kick.setAttribute('aria-label', `Remove ${p.name}`);
+          kick.addEventListener('click', () => this.onKick(p.id));
+          li.append(kick);
+        }
         return li;
       }),
     );
