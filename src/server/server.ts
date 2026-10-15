@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { createServer } from 'node:http';
+import { createServer, type IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import type { Timings } from '../shared/constants';
@@ -12,8 +12,25 @@ export interface ServerOptions {
   host?: string;
   /** Overrides round timings (used by tests to play fast rounds). */
   timings?: Partial<Timings>;
+  /** Behind a reverse proxy: take the client's address from X-Forwarded-For. */
+  trustProxy?: boolean;
+  limits?: Partial<Limits>;
   log?: (msg: string) => void;
 }
+
+/** Caps that keep one client, or a flood of them, from exhausting the server. */
+export interface Limits {
+  /** Open connections allowed from one address. */
+  connectionsPerAddress: number;
+  /** Open connections allowed in total. */
+  connections: number;
+  /** Rooms open at once. */
+  rooms: number;
+  /** Connections that are not in a room are closed after this long. */
+  idleMs: number;
+}
+
+const DEFAULT_LIMITS: Limits = { connectionsPerAddress: 24, connections: 3000, rooms: 500, idleMs: 60_000 };
 
 export interface RunningServer {
   port: number;
@@ -35,9 +52,31 @@ const newToken = () => randomBytes(18).toString('base64url');
 
 export async function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
   const log = opts.log ?? (() => {});
+  const limits = { ...DEFAULT_LIMITS, ...opts.limits };
   const http = createServer(createStaticHandler(findPublicDir()));
-  const wss = new WebSocketServer({ server: http, path: '/ws', maxPayload: 4096 });
   const rooms = new Map<string, GameRoom>();
+  const perAddress = new Map<string, number>();
+
+  const addressOf = (req: IncomingMessage): string => {
+    const forwarded = opts.trustProxy ? req.headers['x-forwarded-for'] : undefined;
+    const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim();
+    return first || req.socket.remoteAddress || 'unknown';
+  };
+
+  const wss = new WebSocketServer({
+    server: http,
+    path: '/ws',
+    maxPayload: 4096,
+    verifyClient: ({ origin, req }, done) => {
+      // Browsers always send Origin: only this site's own pages may connect.
+      if (origin && !sameHost(origin, req.headers.host)) return done(false, 403, 'Forbidden origin');
+      if (wss.clients.size >= limits.connections) return done(false, 503, 'Server busy');
+      if ((perAddress.get(addressOf(req)) ?? 0) >= limits.connectionsPerAddress) {
+        return done(false, 429, 'Too many connections');
+      }
+      done(true);
+    },
+  });
 
   const newCode = (): string => {
     for (;;) {
@@ -47,12 +86,31 @@ export async function startServer(opts: ServerOptions = {}): Promise<RunningServ
     }
   };
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
     let room: GameRoom | null = null;
     let playerId: string | null = null;
     let alive = true;
     let windowStart = Date.now();
     let windowCount = 0;
+
+    const address = addressOf(req);
+    perAddress.set(address, (perAddress.get(address) ?? 0) + 1);
+    ws.on('close', () => {
+      const left = (perAddress.get(address) ?? 1) - 1;
+      if (left > 0) perAddress.set(address, left);
+      else perAddress.delete(address);
+    });
+
+    // Connections only need to stay open while they are in a room.
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const armIdle = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        if (!room) ws.close(1008, 'Idle');
+      }, limits.idleMs);
+    };
+    armIdle();
+    ws.on('close', () => clearTimeout(idleTimer));
 
     const send = (msg: ServerMsg) => {
       if (ws.readyState !== WebSocket.OPEN) return;
@@ -85,12 +143,17 @@ export async function startServer(opts: ServerOptions = {}): Promise<RunningServ
           room.removePlayer(playerId);
           room = null;
           playerId = null;
+          armIdle();
         } else {
           room.handle(playerId, msg);
         }
         return;
       }
       if (msg.t === 'create') {
+        if (rooms.size >= limits.rooms) {
+          send({ t: 'error', code: 'busy', msg: 'The server is full right now. Try again in a few minutes.' });
+          return;
+        }
         const code = newCode();
         const created = new GameRoom({ code, timings: opts.timings, newToken });
         rooms.set(code, created);
@@ -181,4 +244,12 @@ export async function startServer(opts: ServerOptions = {}): Promise<RunningServ
       await new Promise<void>((resolve) => http.close(() => resolve()));
     },
   };
+}
+
+function sameHost(origin: string, host: string | undefined): boolean {
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
 }

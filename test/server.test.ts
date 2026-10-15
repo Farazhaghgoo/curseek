@@ -28,8 +28,8 @@ class Client {
     this.closed = new Promise((resolve) => ws.on('close', () => resolve()));
   }
 
-  static async connect(): Promise<Client> {
-    const ws = new WebSocket(`ws://localhost:${server.port}/ws`);
+  static async connect(opts: { port?: number; origin?: string } = {}): Promise<Client> {
+    const ws = new WebSocket(`ws://localhost:${opts.port ?? server.port}/ws`, { origin: opts.origin });
     await new Promise((resolve, reject) => {
       ws.once('open', resolve);
       ws.once('error', reject);
@@ -298,4 +298,28 @@ test('message floods close the connection', async () => {
   const c = await Client.connect();
   for (let i = 0; i < 400; i++) c.send({ t: 'ping', c: i });
   await c.closed;
+});
+
+test('connections are limited by origin, address, room count and idleness', async () => {
+  const limited = await startServer({ port: 0, limits: { connectionsPerAddress: 2, rooms: 1, idleMs: 300 } });
+  const port = limited.port;
+  try {
+    await assert.rejects(Client.connect({ port, origin: 'https://elsewhere.example' }), /403/);
+    const a = await Client.connect({ port, origin: `http://localhost:${port}` });
+    const b = await Client.connect({ port });
+    await assert.rejects(Client.connect({ port }), /429/, 'a third connection from one address');
+
+    a.send({ t: 'create', name: 'Ann' });
+    await a.next('welcome');
+    b.send({ t: 'create', name: 'Bob' });
+    assert.equal((await b.next('error')).code, 'busy', 'only one room fits');
+
+    await b.closed; // Never joined a room, so it is closed as idle.
+    assert.equal(a.ws.readyState, WebSocket.OPEN, 'players in a room stay connected');
+    const c = await Client.connect({ port });
+    await c.close();
+    await a.close();
+  } finally {
+    await limited.close();
+  }
 });
