@@ -117,10 +117,17 @@ production; the client switches to `wss://` automatically.
 - Hiders cannot see each other through walls either: everyone sees only their own lit area.
 - Players do not collide with each other. Only walls block movement.
 - Caught hiders leave the field and spectate the seeker's view.
-- If the seeker disconnects, the round ends with no winner and the next round starts with a
-  new seeker. If the host leaves, the next player who joined becomes host. If fewer than
-  two players remain, the room returns to the lobby. A room closes when its last human
-  player leaves.
+- If a player's connection drops, or they reload the page, the server holds their place for
+  10 seconds. They keep their role, position, caught state and host role, and their cursor
+  stays frozen where it was. The client reconnects on its own, or on reload, and carries on
+  in the same round. The round does not pause in the meantime: an absent seeker stands
+  still while the clock runs, and still catches any hider who touches them. A player who is
+  away when a new round starts plays it as a hider, never as the seeker.
+- A player who leaves with the ✕ button is removed at once. So is a dropped player who is
+  not back within 10 seconds. If the seeker is removed, the round ends with no winner and
+  the next round starts with a new seeker. If the host is removed, the next player who
+  joined becomes host. If fewer than two players remain, the room returns to the lobby. A
+  room closes when its last human player is gone.
 - Rounds continue automatically after a 6-second results screen.
 - In solo play a bot seeks first, so the first round is about hiding.
 - Bots know the maze layout, which every player saw during the reveal. They only notice
@@ -131,8 +138,10 @@ production; the client switches to `wss://` automatically.
 
 - Rooms are held in a single server process. Restarting the server ends all games, and the
   server cannot be scaled horizontally without sticky routing.
-- A disconnected player cannot rejoin into the same slot; reconnecting joins as a new
-  player who waits for the next round.
+- A dropped player can take their place back only within 10 seconds, and only from the same
+  browser tab: the resume token lives in that tab's session storage. After that, joining
+  again makes them a new player who waits for the next round. The round clock keeps
+  running while anyone is away.
 - Without pointer lock (the fallback mode), the mouse stops moving your cursor when the
   hidden system pointer reaches the edge of the window. Keyboard controls always work.
 - The game is designed for desktop browsers. Touch input is not supported, and on narrow
