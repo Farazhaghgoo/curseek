@@ -1,7 +1,7 @@
 // App controller: wires the UI, transport, session, input and renderer together and runs
 // the frame loop (fixed 60 Hz input ticks, rendering every animation frame).
 
-import { MAX_PLAYERS, MAX_STEP, MIN_PLAYERS, TICK_MS } from '../shared/constants';
+import { DEFAULT_TIMINGS, MAX_PLAYERS, MAX_STEP, MIN_PLAYERS, TICK_MS } from '../shared/constants';
 import { Maze } from '../shared/maze';
 import { normaliseRoomCode } from '../shared/protocol';
 import { mulberry32, randomSeed } from '../shared/rng';
@@ -13,6 +13,8 @@ import { openLocalGame, openSocket, type Transport } from './transport';
 import { Ui, type ResultLine } from './ui';
 
 const NAME_KEY = 'curseek.name';
+/** Resume tokens live in session storage, so a reload gets this tab back into its room. */
+const tokenKey = (code: string) => `curseek.resume.${code}`;
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
 const renderer = new Renderer(canvas);
@@ -27,6 +29,10 @@ let ripples: (Ripple & { start: number })[] = [];
 let hint: { angle: number; start: number } | null = null;
 let releaseShownUntil = 0;
 let lastCountdown = 0;
+/** Set while trying to take back our place after the connection dropped. */
+let reconnecting = false;
+/** Bumped whenever the player leaves, so a rejoin still in flight knows to give up. */
+let generation = 0;
 
 renderer.setMaze(ambientMaze);
 ui.showLanding();
@@ -35,6 +41,13 @@ ui.nameInput.value = storageGet(NAME_KEY) ?? '';
 const roomParam = new URLSearchParams(location.search).get('room');
 if (roomParam) ui.codeInput.value = normaliseRoomCode(roomParam);
 (roomParam && ui.nameInput.value ? ui.codeInput : ui.nameInput).focus();
+
+// After a reload mid-game, take back our place in the room if the server still holds it.
+const savedToken = roomParam ? storageGet(tokenKey(ui.codeInput.value), 'sessionStorage') : null;
+if (savedToken) {
+  ui.setBusy(true);
+  void rejoin(ui.codeInput.value, savedToken, () => ui.showLanding());
+}
 
 // ---------------------------------------------------------------------------------------
 // Landing and lobby actions
@@ -85,6 +98,9 @@ function begin(transport: Transport): void {
 }
 
 function leave(message = ''): void {
+  generation++;
+  reconnecting = false;
+  if (session?.token) storageSet(tokenKey(session.code), null, 'sessionStorage');
   session?.leave();
   session = null;
   input.releaseLock();
@@ -95,13 +111,68 @@ function leave(message = ''): void {
 }
 
 // ---------------------------------------------------------------------------------------
+// Reconnecting
+
+/**
+ * Takes back this tab's place in a room after a reload or a dropped connection. The server holds
+ * the place for a few seconds, so keep trying while it cannot be reached. If the place is gone,
+ * forget the token and call `failed`.
+ */
+async function rejoin(code: string, token: string, failed: () => void): Promise<void> {
+  const gen = generation;
+  const giveUpAt = performance.now() + DEFAULT_TIMINGS.reconnectGraceMs;
+  reconnecting = true;
+  for (;;) {
+    const result = await tryResume(code, token, gen);
+    if (gen !== generation) return; // The player left meanwhile.
+    if (result === 'unreachable' && performance.now() < giveUpAt) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      continue;
+    }
+    reconnecting = false;
+    if (result !== 'ok') {
+      storageSet(tokenKey(code), null, 'sessionStorage');
+      failed();
+    }
+    return;
+  }
+}
+
+/** One attempt over a fresh connection. On success a new session takes over at once. */
+async function tryResume(code: string, token: string, gen: number): Promise<'ok' | 'gone' | 'unreachable'> {
+  const transport = await openSocket().catch(() => null);
+  if (!transport) return 'unreachable';
+  return new Promise((resolve) => {
+    transport.onClose = () => resolve('unreachable');
+    transport.onMessage = (msg) => {
+      if (msg.t === 'error') {
+        transport.close();
+        resolve('gone');
+      } else if (msg.t === 'welcome' && gen !== generation) {
+        // The player left while we were reconnecting: let the place go now.
+        transport.send({ t: 'leave' });
+        transport.close();
+        resolve('ok');
+      } else if (msg.t === 'welcome') {
+        begin(transport);
+        transport.onMessage(msg); // The new session's handler by now.
+        resolve('ok');
+      }
+    };
+    transport.send({ t: 'resume', code, token });
+  });
+}
+
+// ---------------------------------------------------------------------------------------
 // Server events
 
 const listener: SessionListener = {
   welcome() {
     const s = session!;
     ui.hideLanding();
-    if (!s.solo) history.replaceState(null, '', `${location.pathname}?room=${s.code}`);
+    if (s.solo) return;
+    history.replaceState(null, '', `${location.pathname}?room=${s.code}`);
+    if (s.token) storageSet(tokenKey(s.code), s.token, 'sessionStorage');
   },
   room() {
     const s = session!;
@@ -136,7 +207,7 @@ const listener: SessionListener = {
     ripples = [];
     hint = null;
     lastCountdown = 0;
-    if (s.participating) {
+    if (s.participating && !s.caught) {
       sound.play('round');
       ui.toast(s.isSeeker ? 'You are the seeker' : 'You are hiding');
     }
@@ -174,7 +245,13 @@ const listener: SessionListener = {
     leave(msg);
   },
   closed(reason) {
-    leave(reason);
+    const s = session!;
+    if (!s.token) {
+      leave(reason);
+      return;
+    }
+    input.releaseLock();
+    void rejoin(s.code, s.token, () => leave(reason));
   },
 };
 
@@ -214,7 +291,7 @@ function nextRoundText(next: number | null): string {
 
 canvas.addEventListener('click', () => {
   sound.unlock();
-  if (session?.status === 'playing' && session.participating) input.requestLock();
+  if (!reconnecting && session?.status === 'playing' && session.participating) input.requestLock();
 });
 
 // ---------------------------------------------------------------------------------------
@@ -227,7 +304,7 @@ function frame(now: number): void {
   const dt = Math.min(250, now - last);
   last = now;
   const s = session;
-  const inRound = !!s && s.status === 'playing' && !!s.maze && s.participating;
+  const inRound = !reconnecting && !!s && s.status === 'playing' && !!s.maze && s.participating;
   input.active = inRound && s!.canMoveNow() && (input.locked || input.fallback || hasKeys());
 
   if (s && inRound) {
@@ -329,6 +406,11 @@ function formatTime(ms: number): string {
 }
 
 function updateOverlays(s: Session | null, now: number): void {
+  if (s && reconnecting) {
+    ui.setBanner('Connection lost — reconnecting…');
+    ui.setPrompt(null);
+    return;
+  }
   if (!s || s.status !== 'playing') {
     if (s) ui.setPrompt(null);
     return;
@@ -362,8 +444,10 @@ function updateOverlays(s: Session | null, now: number): void {
     releaseShownUntil = 0;
   } else if (phase === 'hunt') {
     if (releaseShownUntil === 0) {
-      releaseShownUntil = now + 1800;
-      sound.play('release');
+      // Resuming mid-hunt: don't replay a release that happened a while ago.
+      const late = serverNow - s.releaseAt;
+      releaseShownUntil = now + Math.max(1, 1800 - late);
+      if (late < 1000) sound.play('release');
     }
     countdown(Math.ceil(huntLeft / 1000), 5);
     if (now < releaseShownUntil) banner = s.isSeeker ? 'Go! Find them.' : 'The seeker is loose';
@@ -384,18 +468,23 @@ window.addEventListener('resize', () => renderer.resize());
 input.onLockChange = () => updateOverlays(session, performance.now());
 requestAnimationFrame(frame);
 
-function storageGet(key: string): string | null {
+type StorageArea = 'localStorage' | 'sessionStorage';
+
+function storageGet(key: string, area: StorageArea = 'localStorage'): string | null {
   try {
-    return localStorage.getItem(key);
+    return window[area].getItem(key);
   } catch {
     return null;
   }
 }
 
-function storageSet(key: string, value: string): void {
+/** Stores a value, or removes it when `value` is null. */
+function storageSet(key: string, value: string | null, area: StorageArea = 'localStorage'): void {
   try {
-    localStorage.setItem(key, value);
+    if (value === null) window[area].removeItem(key);
+    else window[area].setItem(key, value);
   } catch {
-    // Storage may be unavailable (private mode); the name just won't be remembered.
+    // Storage may be unavailable (private mode); the name just won't be remembered, and a
+    // reload can't rejoin the room (a dropped connection still can).
   }
 }

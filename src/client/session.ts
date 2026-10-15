@@ -47,6 +47,8 @@ export class Session {
   myId = '';
   code = '';
   solo = false;
+  /** Takes back our place after a reload or a dropped connection (multiplayer only). */
+  token: string | null = null;
   hostId: string | null = null;
   status: 'lobby' | 'playing' = 'lobby';
   players: PlayerInfo[] = [];
@@ -95,7 +97,9 @@ export class Session {
     this.transport.send(msg);
   }
 
+  /** Leaves the room for good. (A dropped connection instead holds our place for a while.) */
   leave(): void {
+    this.transport.send({ t: 'leave' });
     this.stopPings();
     this.transport.close();
   }
@@ -194,6 +198,7 @@ export class Session {
         this.myId = msg.id;
         this.code = msg.code;
         this.solo = msg.solo;
+        this.token = msg.token ?? null;
         this.startPings();
         this.listener.welcome();
         break;
@@ -248,7 +253,7 @@ export class Session {
     this.serverPhase = 'reveal';
     this.phaseEnd = msg.start + msg.timings.reveal;
     this.participating = msg.you !== null;
-    this.caught = false;
+    this.caught = msg.caught ?? false;
     this.spectating = null;
     this.lastEnd = null;
     this.pending = [];
