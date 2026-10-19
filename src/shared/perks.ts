@@ -1,11 +1,13 @@
 // Pickups scattered through the maze. Touching a mystery orb gives a random effect for a few
 // seconds, drawn from a table that depends on your role: mostly perks, sometimes a curse. Touching
 // a coin scores a point. Shared so the client can predict its own movement and size its light.
+//
+// One effect never comes from an orb: a hider who touches a wall during the hunt is exposed.
 
 import { VIEW_RADIUS } from './constants';
 import type { Rng } from './rng';
 
-export type EffectKind = 'speed' | 'cloak' | 'radar' | 'flare' | 'phase' | 'slow' | 'blind' | 'beacon';
+export type EffectKind = 'speed' | 'cloak' | 'radar' | 'flare' | 'phase' | 'slow' | 'blind' | 'beacon' | 'exposed';
 export type ItemKind = 'orb' | 'coin';
 
 /** Active effects: the server time each one ends. */
@@ -30,6 +32,8 @@ export const EFFECTS: Record<EffectKind, EffectInfo> = {
   slow: { name: 'Slow', blurb: 'you move slower', ms: 4000, curse: true, weight: { seeker: 1.5, hider: 1.5 } },
   blind: { name: 'Blind', blurb: 'your light shrinks', ms: 6000, curse: true, weight: { seeker: 1.5, hider: 1.5 } },
   beacon: { name: 'Beacon', blurb: 'the other side sees where you are', ms: 4000, curse: true, weight: { seeker: 1.5, hider: 1.5 } },
+  /** From touching a wall as a hider, never from an orb. Each touch starts it again. */
+  exposed: { name: 'Exposed', blurb: 'the seeker sees where you are', ms: 1500, curse: true, weight: { seeker: 0, hider: 0 } },
 };
 
 export const EFFECT_KINDS = Object.keys(EFFECTS) as EffectKind[];

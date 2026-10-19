@@ -43,6 +43,9 @@ let finalStretchShown = false;
 /** The light radius as drawn, easing toward the real one when a flare or blindness starts or ends. */
 let shownLight = VIEW_RADIUS;
 let wasCaptured = false;
+let wasExposed = false;
+/** Whether this round has already explained what touching a wall does. */
+let exposureExplained = false;
 /** Set while trying to take back our place after the connection dropped. */
 let reconnecting = false;
 /** Bumped whenever the player leaves, so a rejoin still in flight knows to give up. */
@@ -221,6 +224,8 @@ const listener: SessionListener = {
     lastCountdown = 0;
     finalStretchShown = false;
     shownLight = VIEW_RADIUS;
+    wasExposed = false;
+    exposureExplained = false;
     if (s.participating && !s.caught) {
       sound.play('round');
       ui.toast(s.isSeeker ? 'You are the seeker' : 'You are hiding');
@@ -444,6 +449,7 @@ function buildFrame(s: Session | null, now: number, dt: number, alpha: number): 
     frame.self.name = '';
     frame.self.ghost = s.hasEffect('cloak', serverNow);
     frame.self.phasing = s.hasEffect('phase', serverNow);
+    frame.self.exposed = s.hasEffect('exposed', serverNow);
     frame.light = p;
   } else if (s.spectating) {
     const watched = remotes.get(s.spectating);
@@ -545,6 +551,17 @@ function updateOverlays(s: Session | null, now: number): void {
     }
   }
   ui.setEffects(chips);
+
+  // A bump each time a wall gives us away, and the first time in a round, why.
+  const exposed = steering && s.hasEffect('exposed', serverNow);
+  if (exposed && !wasExposed) {
+    sound.play('bump');
+    if (!exposureExplained) {
+      exposureExplained = true;
+      ui.toast('You touched a wall: the seeker can see you');
+    }
+  }
+  wasExposed = exposed;
 
   let prompt: string | null = null;
   if (steering && input.usesTouch && !input.touching) {

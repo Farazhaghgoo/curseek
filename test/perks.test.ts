@@ -227,6 +227,52 @@ test('phase lets a player through walls, and nobody stays inside one when it end
   assert.ok(!overlapsWall(maze, h.room.positionOf(hider.id)!), 'pushed out of the wall');
 });
 
+test('a hider who touches a wall is shown to the seeker for a moment', () => {
+  const { h, seeker, hiders } = startGame(['Ann', 'Bob', 'Cat']);
+  h.toHunt();
+  const maze = h.room.currentMaze!;
+  const wall = findRightWall(maze);
+  const far = maze.cellCenter(maze.cellCount - 1);
+  h.room.placePlayer(seeker.id, far.x, far.y);
+  const hider = hiders[0];
+  h.room.placePlayer(hider.id, wall.wallX - 12, wall.y);
+  h.advance(300);
+  sendInput(h, hider.id, hider.inbox, MAX_STEP, 0);
+  assert.deepEqual(lastSnap(h, seeker).marked, [hider.id], 'the seeker sees them through the walls');
+  assert.deepEqual(lastSnap(h, hiders[1]).marked, [], 'their own side gets nothing');
+  assert.ok(lastSnap(h, hider).fx?.exposed, 'and they know it');
+
+  h.advance(EFFECTS.exposed.ms);
+  assert.deepEqual(lastSnap(h, seeker).marked, [], 'gone again once they stop touching it');
+});
+
+test('nobody is exposed by moving in the open, by touching walls before the hunt, or as the seeker', () => {
+  const { h, seeker, hiders } = startGame();
+  const maze = h.room.currentMaze!;
+  const wall = findRightWall(maze);
+  const hider = hiders[0];
+  h.room.placePlayer(hider.id, wall.wallX - 12, wall.y);
+  for (let i = 0; i < 5; i++) sendInput(h, hider.id, hider.inbox, MAX_STEP, 0);
+  assert.deepEqual(h.room.effectsOf(hider.id), {}, 'before the hunt');
+
+  h.toHunt();
+  h.room.placePlayer(seeker.id, wall.wallX - 12, wall.y);
+  h.room.placePlayer(hider.id, far(maze).x, far(maze).y);
+  h.advance(300);
+  for (let i = 0; i < 5; i++) sendInput(h, seeker.id, seeker.inbox, MAX_STEP, 0);
+  assert.deepEqual(h.room.effectsOf(seeker.id), {}, 'the seeker');
+
+  h.advance(300);
+  sendInput(h, hider.id, hider.inbox, 1, 0);
+  assert.deepEqual(h.room.effectsOf(hider.id), {}, 'in the open');
+  assert.deepEqual(lastSnap(h, seeker).marked, []);
+});
+
+/** The middle of the bottom-right cell. */
+function far(maze: Maze) {
+  return maze.cellCenter(maze.cellCount - 1);
+}
+
 test('settling puts a circle anywhere on any wall back in the open', () => {
   const maze = Maze.generate(mulberry32(3));
   for (const e of maze.edges) {

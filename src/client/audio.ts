@@ -12,7 +12,8 @@ export type Cue =
   | 'lose'
   | 'coin'
   | 'perk'
-  | 'curse';
+  | 'curse'
+  | 'bump';
 
 const STORAGE_KEY = 'curseek.sound';
 
@@ -30,6 +31,7 @@ const CUES: Record<Cue, { notes: [number, number, number, OscillatorType][]; gai
   coin: { notes: [[988, 0, 0.08, 'square'], [1319, 0.07, 0.2, 'square']], gain: 0.035 },
   perk: { notes: [[523, 0, 0.12, 'triangle'], [784, 0.08, 0.14, 'triangle'], [1047, 0.16, 0.28, 'triangle']], gain: 0.1 },
   curse: { notes: [[300, 0, 0.22, 'sawtooth'], [212, 0.14, 0.4, 'sawtooth']], gain: 0.05 },
+  bump: { notes: [[150, 0, 0.12, 'sine'], [95, 0.03, 0.16, 'triangle']], gain: 0.1 },
 };
 
 export class Sound {

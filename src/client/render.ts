@@ -19,6 +19,8 @@ export interface DrawPlayer {
   ghost?: boolean;
   /** Passing through walls: drawn flickering. */
   phasing?: boolean;
+  /** Seen by the seeker after touching a wall: drawn with a red warning ring. */
+  exposed?: boolean;
 }
 
 export interface DrawItem {
@@ -259,6 +261,19 @@ export class Renderer {
       ctx.lineWidth = 1.2;
       ctx.beginPath();
       ctx.arc(p.x, p.y, PLAYER_RADIUS + 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+    if (p.exposed) {
+      const pulse = f.reducedMotion ? 0.5 : (f.time % 600) / 600;
+      ctx.save();
+      ctx.globalAlpha = 0.85 - pulse * 0.6;
+      ctx.strokeStyle = SEEKER_COLOR;
+      ctx.shadowColor = SEEKER_COLOR;
+      ctx.shadowBlur = 10 * this.dpr;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, PLAYER_RADIUS + 4 + pulse * 8, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
     }

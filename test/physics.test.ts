@@ -72,6 +72,15 @@ test('moving diagonally into a wall slides along it', () => {
   assert.ok(pos.x > CELL * 0.5 + 20 * MAX_STEP * 0.7 - 1e-6, 'should keep its full horizontal speed');
 });
 
+test('a move says whether it touched a wall', () => {
+  const maze = corridorMaze();
+  const pos = { x: CELL * 0.5, y: CELL * 0.5 };
+  assert.equal(moveCircle(maze, pos, MAX_STEP, 0), false, 'along the middle of the corridor');
+  assert.equal(moveCircle(maze, pos, 0, CELL), true, 'into the floor');
+  assert.equal(moveCircle(maze, pos, MAX_STEP * 0.7, MAX_STEP * 0.7), true, 'scraping along it');
+  assert.equal(moveCircle(maze, pos, 0, -MAX_STEP), false, 'away from it');
+});
+
 test('players round convex wall ends instead of sticking', () => {
   // A 2x2 U-shaped corridor around a wall stub hanging from the top boundary between
   // cells (0,0) and (1,0); the stub's free end is at (CELL, CELL).

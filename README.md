@@ -63,6 +63,11 @@ shows as a crosshair: point where you want to go.
   movement and sight.
 - The seeker (the red crosshair) catches a hider by touching them. A wall between the two
   players prevents the catch.
+- **Walls give hiders away.** A hider who bumps into or scrapes along a wall during the hunt
+  is exposed: for 1.5 s after the last touch, the seeker sees where they are, through walls.
+  The hider sees a red ring around their cursor and an "Exposed" timer. Moving through the
+  open, gliding along a wall without pressing into it, and passing through walls with Phase
+  are silent. The seeker can touch walls freely.
 - Every 12 seconds the seeker sees a brief red arc on the edge of their light. It points
   roughly (one of 16 directions) toward the nearest surviving hider. In the final 30
   seconds it comes every 4 seconds, so hiding in a dead end until time runs out is risky.
@@ -91,7 +96,7 @@ with the time they have left. Picking up the same effect again extends it.
 | Speed boost | anyone | 1.6× top speed for 5 s |
 | Flare | anyone | your light reaches twice as far for 8 s |
 | Phase | anyone | you pass through walls for 4 s; if it ends inside a wall, you are pushed out of it |
-| Cloak | hiders | the seeker cannot see you for 6 s, and the seeker's hints ignore you (a touch still catches you) |
+| Cloak | hiders | the seeker cannot see you for 6 s, and the seeker's hints ignore you (a touch still catches you, and touching a wall still gives you away) |
 | Radar | seeker | every hider who isn't cloaked shows up, through walls, for 2 s |
 | Slow (curse) | anyone | 0.55× top speed for 4 s |
 | Blind (curse) | anyone | your light shrinks to under half for 6 s |
@@ -123,7 +128,7 @@ test/         unit, room-simulation, server and end-to-end tests (node:test)
   walls and round wall ends.
 - **Visibility.** Each snapshot sent to a player contains only the opponents they can see:
   within their light radius, with clear line of sight, and not cloaked from them. Players
-  shown by the radar or a beacon travel separately, as marks. A capture's location is only
+  shown by the radar, a beacon or a wall touch travel separately, as marks. A capture's location is only
   sent to players who could see it, and hints are only a coarse direction. The client
   renders the light as a visibility polygon clipped by the walls, with a soft radial falloff.
 - **Effects.** The server rolls and times every effect, and applies speed and phase to the

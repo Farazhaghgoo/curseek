@@ -668,10 +668,17 @@ export class GameRoom {
     this.checkCaptures();
   }
 
-  /** Moves a player, straight through walls while their phase lasts. */
+  /**
+   * Moves a player, straight through walls while their phase lasts. A hider who bumps into or
+   * scrapes along a wall during the hunt gives themselves away: the seeker sees them for a moment.
+   */
   private movePlayer(p: Player, dx: number, dy: number, now: number): void {
-    if (isActive(p.fx, 'phase', now)) moveFree(this.maze!, p.pos, dx, dy);
-    else moveCircle(this.maze!, p.pos, dx, dy);
+    if (isActive(p.fx, 'phase', now)) {
+      moveFree(this.maze!, p.pos, dx, dy);
+      return;
+    }
+    const touched = moveCircle(this.maze!, p.pos, dx, dy);
+    if (touched && p.role === 'hider' && this.phase === 'hunt') this.applyEffect(p, 'exposed', now);
   }
 
   private fixedTick(): void {
@@ -830,10 +837,13 @@ export class GameRoom {
     return viewer.role === 'seeker' && q.role === 'hider' && isActive(q.fx, 'cloak', now);
   }
 
-  /** Whether `viewer` sees opponent `q` wherever they are: by the radar, or by `q`'s beacon. */
+  /**
+   * Whether `viewer` sees opponent `q` wherever they are: by the radar, or because `q` carries a
+   * beacon or has just touched a wall.
+   */
   private marked(viewer: Player, q: Player, now: number): boolean {
     if (q.role === viewer.role || !q.inRound || q.caught) return false;
-    if (isActive(q.fx, 'beacon', now)) return true;
+    if (isActive(q.fx, 'beacon', now) || isActive(q.fx, 'exposed', now)) return true;
     return viewer.role === 'seeker' && isActive(viewer.fx, 'radar', now) && !isActive(q.fx, 'cloak', now);
   }
 
