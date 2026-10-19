@@ -135,6 +135,17 @@ export class Session {
     return this.roundStart + this.timings.reveal + this.timings.fade;
   }
 
+  /** Time left in the hunt at the given server time: all of it before the hunt, none once the round ends. */
+  huntLeft(t = this.serverNow()): number {
+    const phase = this.phaseAt(t);
+    if (phase === 'ended') return 0;
+    if (phase !== 'hunt') return this.timings.hunt;
+    // phaseAt() reaches the hunt on our own clock, before the server's first hunt snapshot
+    // arrives. Until then phaseEnd is still the end of the fade, so go by the round schedule.
+    const end = this.serverPhase === 'hunt' ? this.phaseEnd : this.releaseAt + this.timings.hunt;
+    return end - t;
+  }
+
   canMoveNow(): boolean {
     if (!this.maze || !this.participating || this.caught) return false;
     const phase = this.phaseAt();

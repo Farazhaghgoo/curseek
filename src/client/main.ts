@@ -421,7 +421,7 @@ function updateOverlays(s: Session | null, now: number): void {
   const phase = s.phaseAt();
   const serverNow = s.serverNow();
   const toRelease = s.releaseAt - serverNow;
-  const huntLeft = phase === 'hunt' ? s.phaseEnd - serverNow : phase === 'ended' ? 0 : s.timings.hunt;
+  const huntLeft = s.huntLeft(serverNow);
 
   let role = 'Watching';
   if (s.participating) role = s.caught ? 'Caught' : s.isSeeker ? 'Seeker' : 'Hider';
