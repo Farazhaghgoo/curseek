@@ -47,6 +47,32 @@ export function resolveWalls(maze: Maze, pos: Vec, radius = PLAYER_RADIUS): void
   pos.y = Math.min(maze.height - min, Math.max(min, pos.y));
 }
 
+/** True if a circle overlaps any wall. */
+export function overlapsWall(maze: Maze, pos: Vec, radius = PLAYER_RADIUS): boolean {
+  const min = radius + WALL_HALF - 1e-3;
+  for (const idx of maze.wallsNear(pos.x, pos.y)) {
+    if (distSqPointSegment(pos.x, pos.y, maze.edges[idx], closest) < min * min) return true;
+  }
+  return false;
+}
+
+/** Moves a circle straight through walls (the phase perk), keeping it inside the maze. */
+export function moveFree(maze: Maze, pos: Vec, dx: number, dy: number, radius = PLAYER_RADIUS): void {
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+  const min = radius + WALL_HALF;
+  pos.x = Math.min(maze.width - min, Math.max(min, pos.x + dx));
+  pos.y = Math.min(maze.height - min, Math.max(min, pos.y + dy));
+}
+
+/**
+ * Ends a pass through walls: nobody may stay inside one. A circle left in a wall is pushed out to
+ * the nearer side, or, if that fails (deep in a junction), put back at the centre of its cell.
+ */
+export function settle(maze: Maze, pos: Vec, radius = PLAYER_RADIUS): void {
+  resolveWalls(maze, pos, radius);
+  if (overlapsWall(maze, pos, radius)) maze.cellCenter(maze.cellAt(pos.x, pos.y), pos);
+}
+
 /** Moves a circle by (dx, dy) in small substeps, resolving wall contacts after each one. */
 export function moveCircle(maze: Maze, pos: Vec, dx: number, dy: number, radius = PLAYER_RADIUS): void {
   const len = Math.hypot(dx, dy);

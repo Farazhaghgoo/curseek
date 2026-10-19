@@ -20,12 +20,30 @@ import {
 } from '../shared/constants';
 import type { Vec } from '../shared/geometry';
 import { Maze, type MazeData } from '../shared/maze';
-import { clampStep, moveCircle } from '../shared/physics';
+import {
+  COIN_COUNT,
+  COIN_RESPAWN_MS,
+  EFFECT_KINDS,
+  EFFECTS,
+  ITEM_RADIUS,
+  ORB_COUNT,
+  ORB_RESPAWN_MS,
+  isActive,
+  lightRadius,
+  liveEffects,
+  rollEffect,
+  speedFactor,
+  type EffectKind,
+  type Effects,
+  type ItemKind,
+} from '../shared/perks';
+import { clampStep, moveCircle, moveFree, settle } from '../shared/physics';
 import {
   cleanName,
   type ClientMsg,
   type EndReason,
   type EntityState,
+  type ItemState,
   type Phase,
   type PlayerInfo,
   type ServerMsg,
@@ -53,6 +71,8 @@ export interface RoomOptions {
   solo?: boolean;
   /** Issues the tokens players resume with. Without it (solo play) nobody can resume. */
   newToken?: () => string;
+  /** Scatters orbs and coins through the maze each round. On unless turned off (for tests). */
+  pickups?: boolean;
 }
 
 export type Role = 'seeker' | 'hider';
@@ -81,8 +101,10 @@ interface Player {
   token: string | null;
   /** Clock time their connection dropped, while their place is held for them. */
   awayAt: number | null;
-  /** Points across rounds: one per catch as seeker, one per round survived as a hider. */
+  /** Points across rounds: one per catch as seeker, one per round survived as a hider, one per coin. */
   score: number;
+  /** Effects from orbs, by the clock time each one ends. */
+  fx: Effects;
 }
 
 type EndMsg = Extract<ServerMsg, { t: 'end' }>;
@@ -93,7 +115,9 @@ const BUDGET_SECONDS = 0.15;
 /** Slack for clock drift between client and server. */
 const SPEED_TOLERANCE = 1.05;
 /** Players slightly beyond the lit radius are still sent so they fade in smoothly. */
-const SEND_RANGE = VIEW_RADIUS + PLAYER_RADIUS + 10;
+const SEND_MARGIN = PLAYER_RADIUS + 10;
+/** New pickups appear at least this many cells' walk from every player and other pickup. */
+const ITEM_SPACING = 3;
 const BOT_NAMES = ['Echo', 'Nova', 'Blip', 'Wisp', 'Dot', 'Pixel', 'Moth', 'Flick'];
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -124,6 +148,11 @@ export class GameRoom {
   private lastTick = 0;
   private lastSnapshot = -Infinity;
   private lastUpdate = 0;
+  private readonly pickups: boolean;
+  private readonly items = new Map<number, ItemState>();
+  private nextItemId = 1;
+  /** Pickups taken this round, waiting to reappear elsewhere. */
+  private respawns: { k: ItemKind; at: number }[] = [];
 
   constructor(opts: RoomOptions) {
     this.code = opts.code;
@@ -132,6 +161,7 @@ export class GameRoom {
     this.rng = mulberry32(opts.seed ?? randomSeed());
     this.timings = { ...DEFAULT_TIMINGS, ...opts.timings };
     this.newToken = opts.newToken ?? null;
+    this.pickups = opts.pickups ?? true;
   }
 
   get status(): 'lobby' | 'playing' {
@@ -275,6 +305,10 @@ export class GameRoom {
     this.expireAway(now);
     this.advancePhases(now);
     if (this.phase === 'lobby') return;
+    if (this.isLive()) {
+      this.expireEffects(now);
+      this.respawnItems(now);
+    }
 
     let steps = 0;
     while (now - this.lastTick >= TICK_MS && steps < 10) {
@@ -319,6 +353,27 @@ export class GameRoom {
   placePlayer(id: string, x: number, y: number): void {
     const p = this.players.get(id);
     if (p) p.pos = { x, y };
+  }
+
+  get currentItems(): ItemState[] {
+    return [...this.items.values()].map((i) => ({ ...i }));
+  }
+
+  /** Effects running on a player, by end time. */
+  effectsOf(id: string): Effects {
+    const p = this.players.get(id);
+    return p ? liveEffects(p.fx, this.clock()) : {};
+  }
+
+  /** Drops a pickup at a spot (tests only). Returns its id. */
+  placeItem(k: ItemKind, x: number, y: number): number {
+    return this.addItem(k, { x, y }, true).id;
+  }
+
+  /** Starts an effect on a player as if they had rolled it from an orb (tests only). */
+  giveEffect(id: string, kind: EffectKind): void {
+    const p = this.players.get(id);
+    if (p) this.applyEffect(p, kind, this.clock());
   }
 
   // ---------------------------------------------------------------------------------------
@@ -372,9 +427,16 @@ export class GameRoom {
       p.budget = MAX_SPEED * BUDGET_SECONDS;
       p.budgetAt = now;
       p.hint = null;
+      p.fx = {};
     }
     seeker.pos = this.maze.cellCenter(plan.seeker);
     hiders.forEach((p, i) => (p.pos = this.maze!.cellCenter(plan.hiders[i])));
+    this.items.clear();
+    this.respawns = [];
+    if (this.pickups) {
+      for (let i = 0; i < ORB_COUNT; i++) this.spawnItem('orb', false);
+      for (let i = 0; i < COIN_COUNT; i++) this.spawnItem('coin', false);
+    }
 
     this.phase = 'reveal';
     this.roundStart = now;
@@ -531,14 +593,16 @@ export class GameRoom {
 
   private capture(h: Player, seeker: Player): void {
     const maze = this.maze!;
+    const now = this.clock();
     h.caught = true;
+    h.fx = {};
     seeker.score++;
     this.caughtOrder.push(h.id);
     for (const p of this.players.values()) {
       if (!p.sink) continue;
       // Only reveal where it happened to players who could see that spot.
       const viewer = p === seeker || p === h || p.caught ? seeker : p;
-      const witnessed = p.inRound && (viewer === seeker || canSee(maze, viewer.pos, h.pos, SEND_RANGE));
+      const witnessed = p.inRound && (viewer === seeker || canSee(maze, viewer.pos, h.pos, this.sendRange(viewer, now)));
       p.sink.send(
         witnessed
           ? { t: 'caught', id: h.id, by: seeker.id, x: round2(h.pos.x), y: round2(h.pos.y) }
@@ -552,9 +616,11 @@ export class GameRoom {
   private sendHint(): void {
     const seeker = this.players.get(this.seekerId);
     if (!seeker) return;
+    const now = this.clock();
     let best: Player | null = null;
     let bestDist = Infinity;
     for (const h of this.aliveHiders()) {
+      if (isActive(h.fx, 'cloak', now)) continue;
       const d = Math.hypot(h.pos.x - seeker.pos.x, h.pos.y - seeker.pos.y);
       if (d < bestDist) {
         bestDist = d;
@@ -582,13 +648,14 @@ export class GameRoom {
     p.seq = seq;
     if (round !== this.round || !this.maze || !this.canMove(p)) return;
 
-    // Token bucket: a client can never move faster than MAX_SPEED on average, however many
+    // Token bucket: a client can never move faster than its top speed on average, however many
     // inputs it sends, and can bank at most BUDGET_SECONDS of movement.
     const now = this.clock();
-    const cap = MAX_SPEED * BUDGET_SECONDS;
-    p.budget = Math.min(cap, p.budget + ((now - p.budgetAt) / 1000) * MAX_SPEED * SPEED_TOLERANCE);
+    const factor = speedFactor(p.fx, now);
+    const speed = MAX_SPEED * factor;
+    p.budget = Math.min(speed * BUDGET_SECONDS, p.budget + ((now - p.budgetAt) / 1000) * speed * SPEED_TOLERANCE);
     p.budgetAt = now;
-    const step = clampStep(dx, dy, MAX_STEP);
+    const step = clampStep(dx, dy, MAX_STEP * factor);
     const len = Math.hypot(step.x, step.y);
     if (len > p.budget) {
       const k = p.budget / len;
@@ -596,14 +663,23 @@ export class GameRoom {
       step.y *= k;
     }
     p.budget -= Math.min(len, p.budget);
-    moveCircle(this.maze, p.pos, step.x, step.y);
+    this.movePlayer(p, step.x, step.y, now);
+    this.checkPickups(p);
     this.checkCaptures();
+  }
+
+  /** Moves a player, straight through walls while their phase lasts. */
+  private movePlayer(p: Player, dx: number, dy: number, now: number): void {
+    if (isActive(p.fx, 'phase', now)) moveFree(this.maze!, p.pos, dx, dy);
+    else moveCircle(this.maze!, p.pos, dx, dy);
   }
 
   private fixedTick(): void {
     if (!this.isLive()) return;
     this.stepBots();
     if (this.phase !== 'hunt') return;
+    // Also catches anyone already standing on a pickup when the hunt starts.
+    for (const p of this.players.values()) if (p.awayAt === null) this.checkPickups(p);
     // In the final stretch hints come faster, so hiders cannot simply sit out the clock.
     const finalStretch = this.phaseEnd - this.lastTick <= FINAL_STRETCH_MS;
     const every = finalStretch ? Math.min(FINAL_HINT_EVERY_MS, this.timings.hintEveryMs) : this.timings.hintEveryMs;
@@ -615,27 +691,150 @@ export class GameRoom {
     this.checkCaptures();
   }
 
-  /** Bots move through exactly the same speed cap and collision code as human input. */
+  /**
+   * Bots move through exactly the same speed cap and collision code as human input, and see
+   * through the same light, cloaks, radar and beacons.
+   */
   private stepBots(): void {
     const maze = this.maze;
     if (!maze) return;
+    const now = this.clock();
     for (const p of this.players.values()) {
       if (!p.brain || !p.inRound || p.caught) continue;
+      const sight = BOT_SIGHT * (lightRadius(p.fx, now) / VIEW_RADIUS);
       const seen: Vec[] = [];
       for (const q of this.players.values()) {
         if (q === p || !q.inRound || q.caught || q.role === p.role) continue;
-        if (canSee(maze, p.pos, q.pos, BOT_SIGHT)) seen.push({ ...q.pos });
+        const visible = !this.cloakedFrom(p, q, now) && canSee(maze, p.pos, q.pos, sight);
+        if (visible || this.marked(p, q, now)) seen.push({ ...q.pos });
+      }
+      const items: Vec[] = [];
+      if (this.phase === 'hunt') {
+        for (const it of this.items.values()) {
+          if (Math.hypot(it.x - p.pos.x, it.y - p.pos.y) > sight) continue;
+          if (lineOfSight(maze, p.pos.x, p.pos.y, it.x, it.y)) items.push({ x: it.x, y: it.y });
+        }
       }
       const canMove = this.canMove(p);
-      const want = p.brain.step({ maze, now: this.lastTick, role: p.role, pos: { ...p.pos }, canMove, seen, hint: p.hint });
+      const maxStep = MAX_STEP * speedFactor(p.fx, now);
+      const view = { maze, now: this.lastTick, role: p.role, pos: { ...p.pos }, canMove, seen, hint: p.hint, items, maxStep };
+      const want = p.brain.step(view);
       if (!canMove) continue;
-      const step = clampStep(want.x, want.y, MAX_STEP);
-      moveCircle(maze, p.pos, step.x, step.y);
+      const step = clampStep(want.x, want.y, maxStep);
+      this.movePlayer(p, step.x, step.y, now);
       if (this.phase === 'hunt') {
         this.checkCaptures();
         if (!this.isLive()) return;
       }
     }
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Pickups and effects
+
+  /** Whoever touches a pickup during the hunt takes it. */
+  private checkPickups(p: Player): void {
+    if (this.phase !== 'hunt' || !p.inRound || p.caught || this.items.size === 0) return;
+    const reach = PLAYER_RADIUS + ITEM_RADIUS;
+    for (const item of [...this.items.values()]) {
+      const dx = item.x - p.pos.x;
+      const dy = item.y - p.pos.y;
+      if (dx * dx + dy * dy <= reach * reach) this.pickUp(p, item);
+    }
+  }
+
+  /** A coin scores a point; an orb gives a random effect for the player's role. */
+  private pickUp(p: Player, item: ItemState): void {
+    const now = this.clock();
+    this.items.delete(item.id);
+    this.respawns.push({ k: item.k, at: now + (item.k === 'orb' ? ORB_RESPAWN_MS : COIN_RESPAWN_MS) });
+    let got: { fx: EffectKind; u: number } | null = null;
+    if (item.k === 'orb') {
+      const kind = rollEffect(this.rng, p.role);
+      this.applyEffect(p, kind, now);
+      got = { fx: kind, u: p.fx[kind]! };
+    } else {
+      p.score++;
+    }
+    for (const q of this.players.values()) {
+      q.sink?.send(q === p && got ? { t: 'pickup', id: item.id, by: p.id, ...got } : { t: 'pickup', id: item.id, by: p.id });
+    }
+    if (item.k === 'coin') this.broadcastRoom();
+  }
+
+  /** Starts an effect, or extends it if it is already running. */
+  private applyEffect(p: Player, kind: EffectKind, now: number): void {
+    p.fx[kind] = Math.max(p.fx[kind] ?? 0, now + EFFECTS[kind].ms);
+  }
+
+  /** Ends effects whose time is up. Nobody may stay inside a wall once their phase ends. */
+  private expireEffects(now: number): void {
+    for (const p of this.players.values()) {
+      for (const k of EFFECT_KINDS) {
+        const end = p.fx[k];
+        if (end === undefined || now < end) continue;
+        delete p.fx[k];
+        if (k === 'phase' && this.maze && p.inRound && !p.caught) settle(this.maze, p.pos);
+      }
+    }
+  }
+
+  private respawnItems(now: number): void {
+    if (this.phase !== 'hunt' || !this.respawns.some((r) => r.at <= now)) return;
+    const due = this.respawns.filter((r) => r.at <= now);
+    this.respawns = this.respawns.filter((r) => r.at > now);
+    for (const r of due) {
+      // No room right now (everyone is spread out): try again shortly.
+      if (!this.spawnItem(r.k, true)) this.respawns.push({ k: r.k, at: now + 1000 });
+    }
+  }
+
+  /** Puts a pickup on a free cell. Returns false if there is none. */
+  private spawnItem(k: ItemKind, announce: boolean): boolean {
+    const spot = this.freeSpot();
+    if (!spot) return false;
+    this.addItem(k, spot, announce);
+    return true;
+  }
+
+  private addItem(k: ItemKind, at: Vec, announce: boolean): ItemState {
+    const item: ItemState = { id: this.nextItemId++, k, x: round2(at.x), y: round2(at.y) };
+    this.items.set(item.id, item);
+    if (announce) for (const p of this.players.values()) p.sink?.send({ t: 'item', item });
+    return item;
+  }
+
+  /** The centre of a random cell well away from every player and every other pickup. */
+  private freeSpot(): Vec | null {
+    const maze = this.maze;
+    if (!maze) return null;
+    const blocked = new Uint8Array(maze.cellCount);
+    const block = (x: number, y: number) => {
+      const d = maze.distancesFrom(maze.cellAt(x, y));
+      for (let i = 0; i < d.length; i++) if (d[i] >= 0 && d[i] < ITEM_SPACING) blocked[i] = 1;
+    };
+    for (const p of this.players.values()) if (p.inRound && !p.caught) block(p.pos.x, p.pos.y);
+    for (const it of this.items.values()) block(it.x, it.y);
+    const free: number[] = [];
+    for (let i = 0; i < maze.cellCount; i++) if (!blocked[i]) free.push(i);
+    return free.length > 0 ? maze.cellCenter(free[randInt(this.rng, free.length)]) : null;
+  }
+
+  /** How far a player sees: their light, plus a margin so players near its edge fade in smoothly. */
+  private sendRange(p: Player, now: number): number {
+    return lightRadius(p.fx, now) + SEND_MARGIN;
+  }
+
+  /** A cloaked hider is invisible to the seeker, though a touch still catches them. */
+  private cloakedFrom(viewer: Player, q: Player, now: number): boolean {
+    return viewer.role === 'seeker' && q.role === 'hider' && isActive(q.fx, 'cloak', now);
+  }
+
+  /** Whether `viewer` sees opponent `q` wherever they are: by the radar, or by `q`'s beacon. */
+  private marked(viewer: Player, q: Player, now: number): boolean {
+    if (q.role === viewer.role || !q.inRound || q.caught) return false;
+    if (isActive(q.fx, 'beacon', now)) return true;
+    return viewer.role === 'seeker' && isActive(viewer.fx, 'radar', now) && !isActive(q.fx, 'cloak', now);
   }
 
   // ---------------------------------------------------------------------------------------
@@ -663,6 +862,7 @@ export class GameRoom {
       token: null,
       awayAt: null,
       score: 0,
+      fx: {},
     };
     this.players.set(id, p);
     return p;
@@ -709,6 +909,7 @@ export class GameRoom {
       you: p.inRound ? { x: p.pos.x, y: p.pos.y } : null,
       start: this.roundStart,
       timings: { reveal: this.timings.revealMs, fade: this.timings.fadeMs, hunt: this.timings.huntMs },
+      items: [...this.items.values()],
     };
     if (p.caught) msg.caught = true;
     return msg;
@@ -740,10 +941,15 @@ export class GameRoom {
           o.push(entity(viewer));
         }
         if (viewer) {
+          const range = this.sendRange(viewer, now);
           for (const q of participants) {
-            if (q === p || q === viewer || q.caught) continue;
-            if (canSee(maze, viewer.pos, q.pos, SEND_RANGE)) o.push(entity(q));
+            if (q === p || q === viewer || q.caught || this.cloakedFrom(viewer, q, now)) continue;
+            if (canSee(maze, viewer.pos, q.pos, range)) o.push(entity(q));
           }
+          const marks = participants.filter((q) => this.marked(viewer, q, now)).map(entity);
+          if (marks.length > 0) msg.m = marks;
+          const fx = liveEffects(viewer.fx, now);
+          if (Object.keys(fx).length > 0) msg.fx = fx;
         }
       }
       p.sink.send(msg);

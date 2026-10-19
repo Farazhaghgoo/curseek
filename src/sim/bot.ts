@@ -3,7 +3,7 @@
 // saw the reveal like everyone else) but only perceive opponents through the same
 // line-of-sight test players are subject to.
 
-import { MAX_STEP, VIEW_RADIUS } from '../shared/constants';
+import { VIEW_RADIUS } from '../shared/constants';
 import type { Vec } from '../shared/geometry';
 import type { Maze } from '../shared/maze';
 import type { Rng } from '../shared/rng';
@@ -18,10 +18,14 @@ export interface BotView {
   role: 'seeker' | 'hider';
   pos: Vec;
   canMove: boolean;
-  /** Opponents currently in sight. */
+  /** Opponents currently in sight (or shown by the radar or a beacon). */
   seen: Vec[];
   /** The seeker's latest direction hint. */
   hint: { angle: number; at: number } | null;
+  /** Pickups currently in sight. */
+  items: Vec[];
+  /** Longest step this tick (the top speed, with any speed boost or slow applied). */
+  maxStep: number;
 }
 
 const ZERO: Vec = { x: 0, y: 0 };
@@ -111,6 +115,7 @@ export class BotBrain {
       return;
     }
     this.sighting = null;
+    if (this.goForItem(v)) return;
 
     const newHint = v.hint && v.hint.at > this.hintUsed;
     if (!this.goal || this.reached(v.pos) || v.now >= this.replanAt || newHint) {
@@ -195,6 +200,10 @@ export class BotBrain {
       return;
     }
 
+    if (this.goForItem(v)) {
+      this.settleUntil = 0; // Once it has the pickup, find somewhere to hide again.
+      return;
+    }
     if (!this.goal) {
       this.planHide(v, null);
     } else if (this.reached(v.pos)) {
@@ -260,6 +269,17 @@ export class BotBrain {
     this.fidgetAt = v.now + 1200 + this.rng() * 3000;
   }
 
+  /** Heads for the nearest pickup in sight. Returns false if there is none. */
+  private goForItem(v: BotView): boolean {
+    const item = nearest(v.pos, v.items);
+    if (!item) return false;
+    if (this.goal && dist(this.goal, item) < 1) return true; // Already on the way.
+    this.speed = 0.9;
+    if (pathClear(v.maze, v.pos.x, v.pos.y, item.x, item.y)) this.setDirectGoal(item);
+    else this.planTo(v, item);
+    return true;
+  }
+
   // ---------------------------------------------------------------------------------------
   // Movement
 
@@ -317,7 +337,7 @@ export class BotBrain {
     }
     this.lastPos = { x: pos.x, y: pos.y };
 
-    const len = Math.min(d, MAX_STEP * this.speed);
+    const len = Math.min(d, v.maxStep * this.speed);
     const sway = Math.sin(v.now / 380 + this.wobble) * 0.12;
     const cos = Math.cos(sway);
     const sin = Math.sin(sway);

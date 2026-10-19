@@ -35,9 +35,9 @@ npm run check        # TypeScript type check + all tests
 
 ## Controls
 
-- **Mouse:** click the maze to capture the mouse (pointer lock), then move. Your cursor
-  moves at up to a fixed maximum speed and slides along walls. Press **Esc** to release
-  the mouse, and click again to resume.
+- **Mouse:** press **Tab** (or click the maze) and the mouse steers your cursor. Press **Tab**
+  again (or **Esc**) and it is your ordinary pointer once more, for the buttons. Your cursor
+  moves at up to a fixed maximum speed and slides along walls.
 - **Keyboard:** **WASD** or the **arrow keys**. Diagonal movement is no faster than straight
   movement.
 - **Touch:** touch anywhere on the maze and drag. A joystick appears under your finger, and
@@ -46,8 +46,9 @@ npm run check        # TypeScript type check + all tests
 - **M** mutes or unmutes the sound. The speaker button in the top-right corner does the same.
 - The **✕** button leaves the room.
 
-If the browser refuses pointer lock (for example inside some embedded frames), the mouse
-moves your cursor directly while the pointer is over the maze.
+The game captures the mouse with pointer lock. If the browser refuses it (for example inside
+some embedded frames and app panes), your cursor chases the mouse pointer instead, which
+shows as a crosshair: point where you want to go.
 
 ## Rules
 
@@ -70,15 +71,39 @@ moves your cursor directly while the pointer is over the maze.
 - Caught hiders watch the rest of the round from the seeker's point of view.
 - Players who join during a round watch it from the seeker's point of view, and play from the
   next one.
-- **Scores** carry over from round to round: the seeker gets a point per catch, and every
-  hider still free when time runs out gets a point. They show on the results screen and in
-  the lobby.
+- **Scores** carry over from round to round: the seeker gets a point per catch, every
+  hider still free when time runs out gets a point, and every coin is a point. They show on
+  the results screen and in the lobby.
+
+## Perks, curses and coins
+
+Five violet **? orbs** and six gold **coins** lie in the maze. You see them all during the
+reveal; after that, only inside your light. They can be picked up during the hunt only, by
+touching them. A taken orb turns up somewhere else 8 seconds later, a coin 10 seconds later,
+never close to a player.
+
+A coin is worth a point. An orb is a mystery until you touch it: it gives a random effect for
+a few seconds, usually a perk, sometimes a curse. Your running effects show in the corner
+with the time they have left. Picking up the same effect again extends it.
+
+| Effect | Who can get it | What it does |
+|---|---|---|
+| Speed boost | anyone | 1.6× top speed for 5 s |
+| Flare | anyone | your light reaches twice as far for 8 s |
+| Phase | anyone | you pass through walls for 4 s; if it ends inside a wall, you are pushed out of it |
+| Cloak | hiders | the seeker cannot see you for 6 s, and the seeker's hints ignore you (a touch still catches you) |
+| Radar | seeker | every hider who isn't cloaked shows up, through walls, for 2 s |
+| Slow (curse) | anyone | 0.55× top speed for 4 s |
+| Blind (curse) | anyone | your light shrinks to under half for 6 s |
+| Beacon (curse) | anyone | the other side sees where you are, through walls, for 4 s |
+
+Walls still block catches during Phase. Bots pick up what they see too.
 
 ## How it works
 
 ```
-src/shared/   world constants, maze generation, collision, line of sight, protocol (used by both sides)
-src/sim/      the authoritative game: rooms, rounds, roles, captures, hints, bots
+src/shared/   world constants, maze generation, collision, line of sight, perks, protocol (used by both sides)
+src/sim/      the authoritative game: rooms, rounds, roles, captures, hints, pickups and effects, bots
 src/server/   HTTP static files + WebSocket rooms (wraps src/sim)
 src/client/   input, prediction/reconciliation, interpolation, Canvas renderer, DOM overlays, sound
 test/         unit, room-simulation, server and end-to-end tests (node:test)
@@ -97,9 +122,13 @@ test/         unit, room-simulation, server and end-to-end tests (node:test)
   tunnel through a wall. Pushing out along the nearest surface makes players slide along
   walls and round wall ends.
 - **Visibility.** Each snapshot sent to a player contains only the opponents they can see:
-  within their light radius, with clear line of sight. A capture's location is only sent
-  to players who could see it, and hints are only a coarse direction. The client renders
-  the light as a visibility polygon clipped by the walls, with a soft radial falloff.
+  within their light radius, with clear line of sight, and not cloaked from them. Players
+  shown by the radar or a beacon travel separately, as marks. A capture's location is only
+  sent to players who could see it, and hints are only a coarse direction. The client
+  renders the light as a visibility polygon clipped by the walls, with a soft radial falloff.
+- **Effects.** The server rolls and times every effect, and applies speed and phase to the
+  inputs it accepts. Each snapshot tells a player their own running effects, so the client
+  can predict its movement and size its light; whoever picks up an orb is also told at once.
 - **Netcode.** The local player is predicted immediately and reconciled against the
   server's acknowledged input sequence. Any correction is smoothed out over about 90 ms.
   Remote players are interpolated about 100 ms behind the estimated server clock.
@@ -168,8 +197,9 @@ production; the client switches to `wss://` automatically.
   browser tab: the resume token lives in that tab's session storage. After that, joining
   again makes them a new player who waits for the next round. Only the seeker's absence
   stops the clock.
-- Without pointer lock (the fallback mode), the mouse stops moving your cursor when the
-  hidden system pointer reaches the edge of the window. Keyboard controls always work.
+- Without pointer lock (the fallback mode), your cursor heads straight for the pointer and
+  slides along any wall in the way; it does not find a path around corners, so point along
+  the corridor you want. Keyboard controls always work.
 - The maze is landscape-shaped, so on a phone held upright it is small. Touch controls have
   been tested with simulated touch events, not yet on real phones.
 - With large network jitter (more than about 150 ms), the server's speed limiter may trim

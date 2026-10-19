@@ -3,6 +3,7 @@
 
 import { MAX_NAME_LENGTH } from './constants';
 import type { MazeData } from './maze';
+import type { EffectKind, Effects, ItemKind } from './perks';
 
 export type Phase = 'lobby' | 'reveal' | 'fade' | 'hunt' | 'ended';
 export type EndReason = 'all-caught' | 'time' | 'seeker-left' | 'not-enough-players';
@@ -58,6 +59,14 @@ export interface EntityState {
   y: number;
 }
 
+/** A pickup lying in the maze. */
+export interface ItemState {
+  id: number;
+  k: ItemKind;
+  x: number;
+  y: number;
+}
+
 export interface RoundTimings {
   reveal: number;
   fade: number;
@@ -91,6 +100,8 @@ export type ServerMsg =
       /** Server time the round started (reveal begins). */
       start: number;
       timings: RoundTimings;
+      /** Pickups currently in the maze. */
+      items: ItemState[];
       /** Only when resuming mid-round: you had already been caught. */
       caught?: boolean;
     }
@@ -109,7 +120,15 @@ export type ServerMsg =
       view?: string;
       /** Other players you can currently see. Hidden players are never included. */
       o: EntityState[];
+      /** Effects on the player whose view this is (you, or whoever you watch), by end time. */
+      fx?: Effects;
+      /** Players shown wherever they are, through walls: by the radar, or carrying a beacon. */
+      m?: EntityState[];
     }
+  /** A pickup appeared in the maze. */
+  | { t: 'item'; item: ItemState }
+  /** A pickup was taken. Whoever took an orb is also told what it gave them, and until when. */
+  | { t: 'pickup'; id: number; by: string; fx?: EffectKind; u?: number }
   | { t: 'caught'; id: string; by: string; x?: number; y?: number }
   | { t: 'hint'; a: number }
   | {

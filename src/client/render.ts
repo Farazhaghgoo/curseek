@@ -1,8 +1,9 @@
 // Canvas 2D renderer. The world is scaled to fit the viewport; nothing here affects game state.
 
-import { PLAYER_RADIUS, SEEKER_COLOR, VIEW_RADIUS, WALL_HALF, WORLD_HEIGHT, WORLD_WIDTH } from '../shared/constants';
+import { PLAYER_RADIUS, SEEKER_COLOR, WALL_HALF, WORLD_HEIGHT, WORLD_WIDTH } from '../shared/constants';
 import type { Vec } from '../shared/geometry';
 import type { Maze } from '../shared/maze';
+import { ITEM_RADIUS, type ItemKind } from '../shared/perks';
 import { visibilityPolygon } from '../shared/visibility';
 
 export interface DrawPlayer {
@@ -14,6 +15,23 @@ export interface DrawPlayer {
   seeker: boolean;
   /** Lost connection: drawn faded until they are back. */
   away?: boolean;
+  /** Cloaked: drawn faint. */
+  ghost?: boolean;
+  /** Passing through walls: drawn flickering. */
+  phasing?: boolean;
+}
+
+export interface DrawItem {
+  x: number;
+  y: number;
+  kind: ItemKind;
+}
+
+/** A player shown through walls (by the radar or a beacon). */
+export interface DrawMark {
+  x: number;
+  y: number;
+  color: string;
 }
 
 export interface Ripple {
@@ -31,6 +49,11 @@ export interface Frame {
   mazeAlpha: number;
   /** Centre of the lit area, if any. */
   light: Vec | null;
+  lightRadius: number;
+  /** Pickups. Drawn inside the light, and everywhere at `itemsAlpha` while the maze is shown. */
+  items: DrawItem[];
+  itemsAlpha: number;
+  marks: DrawMark[];
   /** Other players. Drawn only inside the light, unless `showAll`. */
   others: DrawPlayer[];
   /** The local player's cursor, always drawn on top. */
@@ -90,6 +113,11 @@ export class Renderer {
     this.buildMazeLayer();
   }
 
+  /** The world point under a spot on the screen (CSS pixels). */
+  toWorld(p: Vec): Vec {
+    return { x: (p.x - this.ox) / this.scale, y: (p.y - this.oy) / this.scale };
+  }
+
   draw(f: Frame): void {
     const { ctx } = this;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -104,16 +132,23 @@ export class Renderer {
       ctx.drawImage(this.mazeLayer, 0, 0);
       ctx.globalAlpha = 1;
     }
+    if (f.itemsAlpha > 0) {
+      this.worldTransform(ctx);
+      ctx.globalAlpha = f.itemsAlpha;
+      for (const it of f.items) drawItem(ctx, it, f.time, f.reducedMotion, this.dpr);
+      ctx.globalAlpha = 1;
+    }
 
     if (f.showAll) {
       this.worldTransform(ctx);
       for (const p of f.others) this.drawPlayer(ctx, p, f, 1);
     } else if (f.light) {
       this.drawLight(f.light, f);
-      if (f.hint) this.drawHint(f.light, f.hint, f.reducedMotion);
+      if (f.hint) this.drawHint(f.light, f.lightRadius, f.hint, f.reducedMotion);
     }
 
     this.worldTransform(ctx);
+    for (const m of f.marks) drawMark(ctx, m, f.time, f.reducedMotion, this.dpr);
     for (const r of f.ripples) this.drawRipple(r, f.reducedMotion);
     if (f.self) this.drawPlayer(ctx, f.self, f, 1);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -164,7 +199,7 @@ export class Renderer {
   private drawLight(origin: Vec, f: Frame): void {
     const maze = this.maze!;
     const k = this.scale * this.dpr;
-    const radius = VIEW_RADIUS;
+    const radius = f.lightRadius;
     const pad = 10;
     const size = Math.ceil((radius + pad) * 2 * k);
     const layer = this.lightLayer;
@@ -190,6 +225,7 @@ export class Renderer {
     lctx.fillRect(origin.x - radius, origin.y - radius, radius * 2, radius * 2);
     lctx.globalCompositeOperation = 'source-over';
 
+    for (const it of f.items) drawItem(lctx, it, f.time, f.reducedMotion, this.dpr);
     for (const p of f.others) this.drawPlayer(lctx, p, f, 1);
 
     const poly = visibilityPolygon(maze, origin.x, origin.y, radius);
@@ -213,7 +249,20 @@ export class Renderer {
 
   private drawPlayer(ctx: CanvasRenderingContext2D, p: DrawPlayer, f: Frame, alpha: number): void {
     ctx.save();
-    ctx.globalAlpha = p.away ? alpha * 0.4 : alpha;
+    let a = p.away || p.ghost ? alpha * 0.4 : alpha;
+    if (p.phasing) {
+      a *= f.reducedMotion ? 0.6 : 0.5 + 0.25 * Math.sin(f.time / 70);
+      ctx.save();
+      ctx.globalAlpha = 0.7;
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = p.seeker ? SEEKER_COLOR : p.color;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, PLAYER_RADIUS + 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.globalAlpha = a;
     if (p.seeker) drawSeeker(ctx, p.x, p.y, p.color, f.time, f.reducedMotion, this.dpr);
     else drawArrow(ctx, p.x, p.y, p.color, this.dpr);
     if (p.name && p !== f.self) {
@@ -226,13 +275,13 @@ export class Renderer {
   }
 
   /** A soft arc on the edge of the seeker's light pointing roughly toward the nearest hider. */
-  private drawHint(origin: Vec, hint: { angle: number; age: number }, reduced: boolean): void {
+  private drawHint(origin: Vec, radius: number, hint: { angle: number; age: number }, reduced: boolean): void {
     if (hint.age > HINT_MS) return;
     const t = hint.age / HINT_MS;
     const alpha = reduced ? (t < 0.8 ? 0.7 : (1 - t) * 3.5) : Math.sin(Math.PI * Math.min(1, t * 1.1)) * 0.8;
     const ctx = this.ctx;
     this.worldTransform(ctx);
-    const r = VIEW_RADIUS * (reduced ? 0.9 : 0.82 + 0.1 * t);
+    const r = radius * (reduced ? 0.9 : 0.82 + 0.1 * t);
     ctx.save();
     ctx.globalAlpha = Math.max(0, alpha);
     ctx.strokeStyle = SEEKER_COLOR;
@@ -261,6 +310,66 @@ export class Renderer {
     ctx.stroke();
     ctx.restore();
   }
+}
+
+/** A coin (gold) or a mystery orb (violet, with a question mark), gently pulsing. */
+function drawItem(ctx: CanvasRenderingContext2D, it: DrawItem, time: number, reduced: boolean, dpr: number): void {
+  const pulse = reduced ? 0.5 : Math.sin(time / 260 + it.x * 0.37 + it.y * 0.11) * 0.5 + 0.5;
+  ctx.save();
+  if (it.kind === 'coin') {
+    const r = ITEM_RADIUS * 0.8;
+    ctx.shadowColor = '#ffd75e';
+    ctx.shadowBlur = (5 + pulse * 7) * dpr;
+    ctx.fillStyle = '#ffd75e';
+    ctx.beginPath();
+    ctx.arc(it.x, it.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(120, 84, 10, 0.9)';
+    ctx.lineWidth = 0.9;
+    ctx.beginPath();
+    ctx.arc(it.x, it.y, r * 0.55, 0, Math.PI * 2);
+    ctx.stroke();
+  } else {
+    const r = ITEM_RADIUS * (0.92 + pulse * 0.14);
+    const g = ctx.createRadialGradient(it.x - r * 0.3, it.y - r * 0.35, 0, it.x, it.y, r);
+    g.addColorStop(0, '#f6e8ff');
+    g.addColorStop(0.45, '#b77bff');
+    g.addColorStop(1, '#5a22c2');
+    ctx.shadowColor = '#b77bff';
+    ctx.shadowBlur = (8 + pulse * 10) * dpr;
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(it.x, it.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+    ctx.font = `bold ${r * 1.35}px system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('?', it.x, it.y + r * 0.08);
+  }
+  ctx.restore();
+}
+
+/** A ping at a player seen through walls: a ring that keeps expanding from a dot. */
+function drawMark(ctx: CanvasRenderingContext2D, m: DrawMark, time: number, reduced: boolean, dpr: number): void {
+  const t = reduced ? 0.4 : (time % 900) / 900;
+  ctx.save();
+  ctx.strokeStyle = m.color;
+  ctx.fillStyle = m.color;
+  ctx.shadowColor = m.color;
+  ctx.shadowBlur = 12 * dpr;
+  ctx.lineWidth = 2;
+  ctx.globalAlpha = 0.15 + 0.75 * (1 - t);
+  ctx.beginPath();
+  ctx.arc(m.x, m.y, PLAYER_RADIUS + 2 + t * 16, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.globalAlpha = 0.9;
+  ctx.beginPath();
+  ctx.arc(m.x, m.y, 3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
 }
 
 /** Classic arrow pointer, centred on the player's collision circle. */

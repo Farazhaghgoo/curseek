@@ -61,6 +61,7 @@ async function connect(): Promise<Player> {
     round: () => events.push('round'),
     caught: (m) => caught.push(m),
     hint: (a) => hints.push(a),
+    pickup: () => {},
     end: (e) => ends.push(e),
     error: (m) => events.push(`error:${m}`),
     closed: () => events.push('closed'),

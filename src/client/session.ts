@@ -1,10 +1,21 @@
 // Client-side view of a room: applies server messages, predicts the local player's movement,
 // reconciles with authoritative snapshots, and interpolates remote players.
 
+import { MAX_STEP } from '../shared/constants';
 import type { Vec } from '../shared/geometry';
 import { Maze } from '../shared/maze';
-import { clampStep, moveCircle } from '../shared/physics';
-import type { ClientMsg, EntityState, Phase, PlayerInfo, RoomSettings, RoundTimings, ServerMsg } from '../shared/protocol';
+import { isActive, speedFactor, type Effects } from '../shared/perks';
+import { clampStep, moveCircle, moveFree, settle } from '../shared/physics';
+import type {
+  ClientMsg,
+  EntityState,
+  ItemState,
+  Phase,
+  PlayerInfo,
+  RoomSettings,
+  RoundTimings,
+  ServerMsg,
+} from '../shared/protocol';
 import type { Transport } from './transport';
 
 export type EndInfo = Extract<ServerMsg, { t: 'end' }>;
@@ -15,6 +26,8 @@ export interface SessionListener {
   round(): void;
   caught(msg: Extract<ServerMsg, { t: 'caught' }>): void;
   hint(angle: number): void;
+  /** Someone took a pickup (whoever it was: `by`). */
+  pickup(msg: Extract<ServerMsg, { t: 'pickup' }>): void;
   end(info: EndInfo): void;
   error(msg: string): void;
   closed(reason: string): void;
@@ -36,6 +49,8 @@ interface PendingInput {
   s: number;
   x: number;
   y: number;
+  /** Predicted as passing through walls. */
+  phase: boolean;
 }
 
 /** Snapping instead of smoothing above this correction distance (e.g. a new round). */
@@ -67,6 +82,12 @@ export class Session {
   alive = 0;
   total = 0;
   lastEnd: EndInfo | null = null;
+  /** Pickups in the maze, by id. */
+  items = new Map<number, ItemState>();
+  /** Effects on the player whose view we have (ourselves, or whoever we watch), by end time. */
+  effects: Effects = {};
+  /** Opponents shown wherever they are, by the radar or a beacon. */
+  marks: EntityState[] = [];
 
   /** Predicted local position at the latest tick, and at the tick before (for render interpolation). */
   pos: Vec = { x: 0, y: 0 };
@@ -75,6 +96,7 @@ export class Session {
   correction: Vec = { x: 0, y: 0 };
   private pending: PendingInput[] = [];
   private seq = 0;
+  private phasing = false;
 
   private remotes = new Map<string, Remote>();
   private clockOffset = 0;
@@ -153,16 +175,31 @@ export class Session {
     return (phase === 'reveal' || phase === 'fade') && !this.isSeeker;
   }
 
+  /** Whether an effect is running on the player whose view we have. */
+  hasEffect(kind: keyof Effects, t = this.serverNow()): boolean {
+    return isActive(this.effects, kind, t);
+  }
+
+  /** Longest step one input tick may take now, with any speed boost or slow applied. */
+  maxStep(t = this.serverNow()): number {
+    return MAX_STEP * speedFactor(this.effects, t);
+  }
+
   /** One fixed 60 Hz input tick: predict locally, then send the same input to the server. */
   tick(move: Vec): void {
     this.prevPos.x = this.pos.x;
     this.prevPos.y = this.pos.y;
     if (!this.maze || !this.canMoveNow()) return;
-    const step = clampStep(move.x, move.y);
+    const now = this.serverNow();
+    // Like the server: nobody stays inside a wall once their phase ends.
+    const phasing = this.hasEffect('phase', now);
+    if (this.phasing && !phasing) settle(this.maze, this.pos);
+    this.phasing = phasing;
+    const step = clampStep(move.x, move.y, this.maxStep(now));
     if (step.x === 0 && step.y === 0) return;
-    const input = { s: ++this.seq, x: step.x, y: step.y };
+    const input = { s: ++this.seq, x: step.x, y: step.y, phase: phasing };
     this.pending.push(input);
-    moveCircle(this.maze, this.pos, step.x, step.y);
+    stepFrom(this.maze, this.pos, input);
     this.transport.send({ t: 'input', r: this.round, s: input.s, x: input.x, y: input.y });
   }
 
@@ -242,6 +279,15 @@ export class Session {
       case 'hint':
         this.listener.hint(msg.a);
         break;
+      case 'item':
+        this.items.set(msg.item.id, msg.item);
+        break;
+      case 'pickup':
+        this.items.delete(msg.id);
+        // Use what we got at once rather than waiting for the next snapshot to say so.
+        if (msg.by === this.myId && msg.fx && msg.u !== undefined) this.effects = { ...this.effects, [msg.fx]: msg.u };
+        this.listener.pickup(msg);
+        break;
       case 'end':
         this.serverPhase = 'ended';
         this.lastEnd = msg;
@@ -272,6 +318,10 @@ export class Session {
     this.pending = [];
     this.remotes.clear();
     this.correction = { x: 0, y: 0 };
+    this.items = new Map(msg.items.map((i) => [i.id, i]));
+    this.effects = {};
+    this.marks = [];
+    this.phasing = false;
     if (msg.you) {
       this.pos = { ...msg.you };
       this.prevPos = { ...msg.you };
@@ -287,6 +337,8 @@ export class Session {
     this.alive = msg.alive;
     this.total = msg.total;
     this.spectating = msg.view ?? null;
+    this.effects = msg.fx ?? {};
+    this.marks = msg.m ?? [];
     if (msg.you && this.maze && !this.caught) this.reconcile(msg.you);
     this.updateRemotes(msg.st, msg.o);
   }
@@ -296,7 +348,7 @@ export class Session {
     const maze = this.maze!;
     this.pending = this.pending.filter((p) => p.s > you.s);
     const next = { x: you.x, y: you.y };
-    for (const p of this.pending) moveCircle(maze, next, p.x, p.y);
+    for (const p of this.pending) stepFrom(maze, next, p);
     const dx = this.pos.x - next.x;
     const dy = this.pos.y - next.y;
     if (dx * dx + dy * dy > SNAP_DISTANCE * SNAP_DISTANCE) {
@@ -362,4 +414,10 @@ export class Session {
     const best = [...this.clockSamples].sort((a, b) => a.rtt - b.rtt).slice(0, 3);
     this.clockOffset = best.reduce((sum, s) => sum + s.offset, 0) / best.length;
   }
+}
+
+/** Applies one predicted input: through walls if it was made while phasing. */
+function stepFrom(maze: Maze, pos: Vec, input: PendingInput): void {
+  if (input.phase) moveFree(maze, pos, input.x, input.y);
+  else moveCircle(maze, pos, input.x, input.y);
 }

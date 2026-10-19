@@ -1,5 +1,8 @@
-// Mouse (pointer lock preferred), keyboard and touch input. Produces raw deltas and directions;
-// the game loop turns them into per-tick movement requests capped at the maximum speed.
+// Mouse, keyboard and touch input. Produces raw deltas, directions and a pointer target; the game
+// loop turns them into per-tick movement requests capped at the maximum speed.
+//
+// The mouse steers only while the game holds it (Tab or a click on the maze; Tab or Esc lets go):
+// through pointer lock where the browser allows it, or else by the player chasing the pointer.
 
 import type { Vec } from '../shared/geometry';
 
@@ -31,8 +34,13 @@ export class Input {
   /** True while the game wants movement input (playing and able to move). */
   active = false;
   locked = false;
-  /** Pointer lock is unavailable here: the mouse moves the player while over the canvas. */
+  /** Pointer lock is unavailable here, so holding the mouse means following the pointer. */
   fallback: boolean;
+  /** Holding the mouse without pointer lock: the player chases the pointer. */
+  following = false;
+  /** Where the mouse pointer last was, in CSS pixels (for following it). */
+  pointer: Vec | null = null;
+  /** Called when the game takes or lets go of the mouse. */
   onLockChange: () => void = () => {};
   /** Called whenever the touch joystick appears, moves or goes away. */
   onStickChange: (stick: Stick | null) => void = () => {};
@@ -58,11 +66,10 @@ export class Input {
     document.addEventListener('pointerlockerror', () => this.onLockFailed());
 
     window.addEventListener('mousemove', (e) => {
-      if (!this.active) return;
-      if (this.locked || (this.fallback && e.target === canvas)) {
-        this.mx += e.movementX || 0;
-        this.my += e.movementY || 0;
-      }
+      if (!this.locked) this.pointer = { x: e.clientX, y: e.clientY };
+      if (!this.active || !this.locked) return;
+      this.mx += e.movementX || 0;
+      this.my += e.movementY || 0;
     });
 
     window.addEventListener('keydown', (e) => {
@@ -110,9 +117,19 @@ export class Input {
     canvas.addEventListener('pointercancel', lift);
   }
 
-  /** Asks for pointer lock. Must be called from a user gesture (a click). */
-  requestLock(): void {
-    if (this.fallback || this.locked) return;
+  /** The game holds the mouse: it steers the player. */
+  get captured(): boolean {
+    return this.locked || this.following;
+  }
+
+  /** Takes the mouse. Must be called from a user gesture (a click or a key press). */
+  capture(): void {
+    if (this.captured) return;
+    if (this.fallback) {
+      this.following = true;
+      this.onLockChange();
+      return;
+    }
     try {
       const result = this.canvas.requestPointerLock() as unknown;
       if (result instanceof Promise) result.catch(() => this.onLockFailed());
@@ -121,8 +138,18 @@ export class Input {
     }
   }
 
-  releaseLock(): void {
+  /** Lets go of the mouse: it is an ordinary pointer again. */
+  release(): void {
     if (this.locked) document.exitPointerLock();
+    if (this.following) {
+      this.following = false;
+      this.onLockChange();
+    }
+  }
+
+  toggle(): void {
+    if (this.captured) this.release();
+    else this.capture();
   }
 
   /** Mouse movement (CSS pixels) since the last call. */
@@ -176,9 +203,13 @@ export class Input {
   }
 
   private onLockFailed(): void {
-    // Some environments (sandboxed frames, some browsers) refuse pointer lock entirely.
-    // If it has never worked, switch to moving with the visible-area mouse instead.
-    if (!this.everLocked) this.fallback = true;
+    // Some environments (embedded panes, sandboxed frames, some browsers) refuse pointer lock
+    // entirely. If it has never worked, follow the pointer instead, now and from then on. (If it
+    // has worked, this is a passing refusal, such as just after Esc, and the next try may work.)
+    if (!this.everLocked) {
+      this.fallback = true;
+      this.following = true;
+    }
     this.onLockChange();
   }
 }

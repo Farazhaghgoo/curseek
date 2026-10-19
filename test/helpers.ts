@@ -31,14 +31,24 @@ export class Inbox {
 /** Resume tokens unique across every room in a test run. */
 let tokens = 0;
 
-/** A room driven by a manual clock. */
+/**
+ * A room driven by a manual clock. Pickups are off unless asked for, so that tests of the core
+ * rules never depend on who happens to walk over an orb or a coin.
+ */
 export class Harness {
   now = 1000;
   readonly room: GameRoom;
   readonly inboxes = new Map<string, Inbox>();
 
   constructor(opts: Partial<RoomOptions> = {}) {
-    this.room = new GameRoom({ code: 'TEST', seed: 1, clock: () => this.now, newToken: () => `token${++tokens}`, ...opts });
+    this.room = new GameRoom({
+      code: 'TEST',
+      seed: 1,
+      clock: () => this.now,
+      newToken: () => `token${++tokens}`,
+      pickups: false,
+      ...opts,
+    });
   }
 
   join(name: string): { id: string; inbox: Inbox } {

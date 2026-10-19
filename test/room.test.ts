@@ -67,7 +67,7 @@ test('round messages carry only your own spawn', () => {
   assert.equal(new Set(spawns.map((s) => `${s!.x},${s!.y}`)).size, 3);
   for (const p of players) {
     const round = p.inbox.last('round')!;
-    assert.deepEqual(Object.keys(round).sort(), ['maze', 'n', 'seekerId', 'start', 't', 'timings', 'you']);
+    assert.deepEqual(Object.keys(round).sort(), ['items', 'maze', 'n', 'seekerId', 'start', 't', 'timings', 'you']);
   }
 });
 

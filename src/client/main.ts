@@ -1,8 +1,17 @@
 // App controller: wires the UI, transport, session, input and renderer together and runs
 // the frame loop (fixed 60 Hz input ticks, rendering every animation frame).
 
-import { DEFAULT_TIMINGS, FINAL_STRETCH_MS, MAX_PLAYERS, MAX_STEP, MIN_PLAYERS, TICK_MS } from '../shared/constants';
+import {
+  DEFAULT_TIMINGS,
+  FINAL_STRETCH_MS,
+  MAX_PLAYERS,
+  MIN_PLAYERS,
+  SEEKER_COLOR,
+  TICK_MS,
+  VIEW_RADIUS,
+} from '../shared/constants';
 import { Maze } from '../shared/maze';
+import { EFFECT_KINDS, EFFECTS, lightRadius } from '../shared/perks';
 import { normaliseRoomCode, type PlayerInfo } from '../shared/protocol';
 import { mulberry32, randomSeed } from '../shared/rng';
 import { Sound } from './audio';
@@ -11,7 +20,7 @@ import { rejoin } from './rejoin';
 import { Renderer, type DrawPlayer, type Frame, type Ripple } from './render';
 import { Session, type EndInfo, type SessionListener } from './session';
 import { openLocalGame, openSocket, type Transport } from './transport';
-import { Ui, type ResultLine } from './ui';
+import { Ui, type EffectChip, type ResultLine } from './ui';
 
 const NAME_KEY = 'curseek.name';
 /** Resume tokens live in session storage, so a reload gets this tab back into its room. */
@@ -31,6 +40,9 @@ let hint: { angle: number; start: number } | null = null;
 let releaseShownUntil = 0;
 let lastCountdown = 0;
 let finalStretchShown = false;
+/** The light radius as drawn, easing toward the real one when a flare or blindness starts or ends. */
+let shownLight = VIEW_RADIUS;
+let wasCaptured = false;
 /** Set while trying to take back our place after the connection dropped. */
 let reconnecting = false;
 /** Bumped whenever the player leaves, so a rejoin still in flight knows to give up. */
@@ -82,8 +94,23 @@ ui.onLeave = () => leave();
 ui.onToggleSound = () => ui.setSound(sound.toggle());
 
 window.addEventListener('keydown', (e) => {
-  if (e.code === 'KeyM' && !(e.target instanceof HTMLInputElement)) ui.setSound(sound.toggle());
+  if (e.target instanceof HTMLInputElement) return;
+  if (e.code === 'KeyM') ui.setSound(sound.toggle());
+  // Tab hands the mouse to the game, and back. (Esc ends pointer lock by itself.)
+  if (e.code === 'Tab' && (input.captured || canSteer())) {
+    e.preventDefault();
+    if (!e.repeat) {
+      sound.unlock();
+      input.toggle();
+    }
+  }
+  if (e.code === 'Escape') input.release();
 });
+
+/** Whether the local player is in a round with a cursor of their own to steer. */
+function canSteer(): boolean {
+  return !reconnecting && session?.status === 'playing' && session.participating && !session.caught;
+}
 
 async function connect(first: (t: Transport) => void): Promise<void> {
   sound.unlock();
@@ -110,7 +137,7 @@ function leave(message = ''): void {
   if (session?.token) storageSet(tokenKey(session.code), null, 'sessionStorage');
   session?.leave();
   session = null;
-  input.releaseLock();
+  input.release();
   ui.setInGame(false);
   renderer.setMaze(ambientMaze);
   history.replaceState(null, '', location.pathname);
@@ -161,7 +188,7 @@ const listener: SessionListener = {
     const s = session!;
     announcePlayerChanges(s);
     if (s.status === 'lobby') {
-      input.releaseLock();
+      input.release();
       ui.setInGame(false);
       ui.hideResult();
       ui.setHud(null);
@@ -193,10 +220,23 @@ const listener: SessionListener = {
     hint = null;
     lastCountdown = 0;
     finalStretchShown = false;
+    shownLight = VIEW_RADIUS;
     if (s.participating && !s.caught) {
       sound.play('round');
       ui.toast(s.isSeeker ? 'You are the seeker' : 'You are hiding');
     }
+  },
+  pickup(msg) {
+    if (msg.by !== session!.myId) return;
+    if (!msg.fx) {
+      ui.toast('+1 point');
+      sound.play('coin');
+      return;
+    }
+    const fx = EFFECTS[msg.fx];
+    const text = `${fx.name}: ${fx.blurb} for ${fx.ms / 1000} s`;
+    ui.toast(fx.curse ? `Cursed! ${text}` : text);
+    sound.play(fx.curse ? 'curse' : 'perk');
   },
   caught(msg) {
     const s = session!;
@@ -236,7 +276,7 @@ const listener: SessionListener = {
       leave(reason);
       return;
     }
-    input.releaseLock();
+    input.release();
     void rejoinRoom(s.code, s.token, () => leave(reason));
   },
 };
@@ -289,12 +329,12 @@ function nextRoundText(next: number | null): string {
 }
 
 // ---------------------------------------------------------------------------------------
-// Pointer lock
+// Mouse capture (Tab or a click on the maze; Tab or Esc lets go)
 
 canvas.addEventListener('click', () => {
   sound.unlock();
   if (input.usesTouch) return; // Touch steers with the on-screen joystick instead.
-  if (!reconnecting && session?.status === 'playing' && session.participating) input.requestLock();
+  if (canSteer()) input.capture();
 });
 
 // ---------------------------------------------------------------------------------------
@@ -308,7 +348,7 @@ function frame(now: number): void {
   last = now;
   const s = session;
   const inRound = !reconnecting && !!s && s.status === 'playing' && !!s.maze && s.participating;
-  input.active = inRound && s!.canMoveNow() && (input.locked || input.fallback || hasDirection());
+  input.active = inRound && s!.canMoveNow() && (input.captured || hasDirection());
 
   if (s && inRound) {
     acc += dt;
@@ -321,10 +361,17 @@ function frame(now: number): void {
     if (n > 0) {
       const mouse = input.active ? input.takeMouse() : { x: 0, y: 0 };
       const dir = input.direction();
+      const step = s.maxStep();
       // Spread this frame's mouse motion over its ticks, converted from screen pixels to world units.
       const mx = mouse.x / n / renderer.scale;
       const my = mouse.y / n / renderer.scale;
-      for (let i = 0; i < n; i++) s.tick({ x: mx + dir.x * MAX_STEP, y: my + dir.y * MAX_STEP });
+      // Following the pointer: head for the spot under it, as fast as allowed (keys take over while held).
+      const target = input.active && input.following && input.pointer && !hasDirection() ? renderer.toWorld(input.pointer) : null;
+      for (let i = 0; i < n; i++) {
+        const fx = target ? target.x - s.pos.x : 0;
+        const fy = target ? target.y - s.pos.y : 0;
+        s.tick({ x: mx + dir.x * step + fx, y: my + dir.y * step + fy });
+      }
     }
     if (!input.active) input.clearMouse();
   } else {
@@ -348,6 +395,10 @@ function buildFrame(s: Session | null, now: number, dt: number, alpha: number): 
     time: now,
     mazeAlpha: 0.14,
     light: null,
+    lightRadius: VIEW_RADIUS,
+    items: [],
+    itemsAlpha: 0,
+    marks: [],
     others: [],
     self: null,
     showAll: false,
@@ -358,7 +409,8 @@ function buildFrame(s: Session | null, now: number, dt: number, alpha: number): 
   if (!s || s.status !== 'playing' || !s.maze) return frame;
 
   const phase = s.phaseAt();
-  const t = s.serverNow() - s.roundStart;
+  const serverNow = s.serverNow();
+  const t = serverNow - s.roundStart;
   if (phase === 'reveal') frame.mazeAlpha = 1;
   else if (phase === 'fade') {
     const k = Math.min(1, Math.max(0, (t - s.timings.reveal) / s.timings.fade));
@@ -366,6 +418,18 @@ function buildFrame(s: Session | null, now: number, dt: number, alpha: number): 
   } else if (phase === 'ended') frame.mazeAlpha = 0.55;
   else frame.mazeAlpha = 0;
   frame.showAll = phase === 'ended';
+
+  // Pickups show wherever the maze does, and otherwise only in the light.
+  for (const it of s.items.values()) frame.items.push({ x: it.x, y: it.y, kind: it.k });
+  frame.itemsAlpha = phase === 'hunt' ? 0 : frame.mazeAlpha;
+  if (phase === 'hunt') {
+    for (const m of s.marks) {
+      frame.marks.push({ x: m.x, y: m.y, color: m.i === s.seekerId ? SEEKER_COLOR : (s.playerInfo(m.i)?.color ?? '#fff') });
+    }
+  }
+  const light = lightRadius(s.effects, serverNow);
+  shownLight = reduced ? light : shownLight + (light - shownLight) * (1 - Math.exp(-dt / 140));
+  frame.lightRadius = shownLight;
 
   const draw = (id: string, x: number, y: number): DrawPlayer => {
     const info = s.playerInfo(id);
@@ -378,6 +442,8 @@ function buildFrame(s: Session | null, now: number, dt: number, alpha: number): 
     const p = s.renderPos(alpha, dt);
     frame.self = draw(s.myId, p.x, p.y);
     frame.self.name = '';
+    frame.self.ghost = s.hasEffect('cloak', serverNow);
+    frame.self.phasing = s.hasEffect('phase', serverNow);
     frame.light = p;
   } else if (s.spectating) {
     const watched = remotes.get(s.spectating);
@@ -412,10 +478,12 @@ function updateOverlays(s: Session | null, now: number): void {
   if (s && reconnecting) {
     ui.setBanner('Connection lost — reconnecting…');
     ui.setPrompt(null);
+    ui.setEffects([]);
     return;
   }
   if (!s || s.status !== 'playing') {
     if (s) ui.setPrompt(null);
+    ui.setEffects([]);
     return;
   }
   const phase = s.phaseAt();
@@ -467,12 +535,23 @@ function updateOverlays(s: Session | null, now: number): void {
   ui.setBanner(banner);
 
   const steering = s.participating && !s.caught && phase !== 'ended';
+  const chips: EffectChip[] = [];
+  if (steering) {
+    for (const kind of EFFECT_KINDS) {
+      const end = s.effects[kind];
+      if (end === undefined || end <= serverNow) continue;
+      const fx = EFFECTS[kind];
+      chips.push({ kind, name: fx.name, curse: fx.curse, left: end - serverNow, frac: Math.min(1, (end - serverNow) / fx.ms) });
+    }
+  }
+  ui.setEffects(chips);
+
   let prompt: string | null = null;
   if (steering && input.usesTouch && !input.touching) {
     const portrait = window.innerHeight > window.innerWidth;
     prompt = `Drag anywhere to move${portrait ? ' · turn sideways for a bigger maze' : ''}`;
-  } else if (steering && !input.usesTouch && !input.locked && !input.fallback) {
-    prompt = 'Click the maze to move with your mouse · or use WASD';
+  } else if (steering && !input.usesTouch && !input.captured) {
+    prompt = 'Tab: steer with the mouse · or WASD';
   }
   ui.setPrompt(prompt);
 }
@@ -481,7 +560,12 @@ function updateOverlays(s: Session | null, now: number): void {
 Object.defineProperty(window, 'curseek', { value: { get session() { return session; } } });
 
 window.addEventListener('resize', () => renderer.resize());
-input.onLockChange = () => updateOverlays(session, performance.now());
+input.onLockChange = () => {
+  document.body.classList.toggle('following', input.following);
+  if (input.captured && !wasCaptured) ui.toast('The mouse steers you · Tab to let go');
+  wasCaptured = input.captured;
+  updateOverlays(session, performance.now());
+};
 input.onStickChange = (stick) => ui.setStick(session?.status === 'playing' && session.participating ? stick : null);
 requestAnimationFrame(frame);
 

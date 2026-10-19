@@ -1,6 +1,18 @@
 // Tiny procedural sound effects (Web Audio oscillators, no asset files).
 
-export type Cue = 'round' | 'tick' | 'release' | 'catch' | 'caught' | 'otherCaught' | 'hint' | 'win' | 'lose';
+export type Cue =
+  | 'round'
+  | 'tick'
+  | 'release'
+  | 'catch'
+  | 'caught'
+  | 'otherCaught'
+  | 'hint'
+  | 'win'
+  | 'lose'
+  | 'coin'
+  | 'perk'
+  | 'curse';
 
 const STORAGE_KEY = 'curseek.sound';
 
@@ -15,6 +27,9 @@ const CUES: Record<Cue, { notes: [number, number, number, OscillatorType][]; gai
   hint: { notes: [[520, 0, 0.5, 'sine'], [780, 0.05, 0.45, 'sine']], gain: 0.05 },
   win: { notes: [[523, 0, 0.2, 'triangle'], [659, 0.12, 0.2, 'triangle'], [784, 0.24, 0.4, 'triangle']], gain: 0.12 },
   lose: { notes: [[392, 0, 0.25, 'triangle'], [311, 0.18, 0.45, 'triangle']], gain: 0.1 },
+  coin: { notes: [[988, 0, 0.08, 'square'], [1319, 0.07, 0.2, 'square']], gain: 0.035 },
+  perk: { notes: [[523, 0, 0.12, 'triangle'], [784, 0.08, 0.14, 'triangle'], [1047, 0.16, 0.28, 'triangle']], gain: 0.1 },
+  curse: { notes: [[300, 0, 0.22, 'sawtooth'], [212, 0.14, 0.4, 'sawtooth']], gain: 0.05 },
 };
 
 export class Sound {

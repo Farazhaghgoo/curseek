@@ -2,8 +2,9 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { FINAL_STRETCH_MS } from '../src/shared/constants';
+import { FINAL_STRETCH_MS, MAX_STEP } from '../src/shared/constants';
 import { Maze } from '../src/shared/maze';
+import { SPEED_BOOST } from '../src/shared/perks';
 import type { RoundTimings, ServerMsg } from '../src/shared/protocol';
 import { mulberry32 } from '../src/shared/rng';
 import { Session } from '../src/client/session';
@@ -23,13 +24,14 @@ function inRound(): { session: Session; receive: (msg: ServerMsg) => void } {
     round: noop,
     caught: noop,
     hint: noop,
+    pickup: noop,
     end: noop,
     error: noop,
     closed: noop,
   });
   const receive = (msg: ServerMsg) => transport.onMessage(msg);
   const maze = Maze.generate(mulberry32(1)).toData();
-  receive({ t: 'round', n: 1, maze, seekerId: 'seeker', you: { x: 40, y: 40 }, start, timings });
+  receive({ t: 'round', n: 1, maze, seekerId: 'seeker', you: { x: 40, y: 40 }, start, timings, items: [] });
   return { session, receive };
 }
 
@@ -48,6 +50,20 @@ test('the hunt clock starts full even before the first hunt snapshot arrives', (
   assert.equal(session.phaseAt(t), 'hunt');
   assert.equal(session.huntLeft(t), timings.hunt - 10);
   assert.ok(session.huntLeft(t) > FINAL_STRETCH_MS, 'not yet the final stretch');
+});
+
+test('pickups come and go, and an orb we take speeds up our own prediction at once', () => {
+  const { session, receive } = inRound();
+  session.myId = 'me';
+  receive({ t: 'item', item: { id: 7, k: 'orb', x: 60, y: 20 } });
+  assert.deepEqual([...session.items.keys()], [7]);
+
+  const t = release + 100;
+  assert.equal(session.maxStep(t), MAX_STEP);
+  receive({ t: 'pickup', id: 7, by: 'me', fx: 'speed', u: t + 5000 });
+  assert.equal(session.items.size, 0);
+  assert.equal(session.maxStep(t), MAX_STEP * SPEED_BOOST, 'without waiting for a snapshot');
+  assert.equal(session.maxStep(t + 5000), MAX_STEP);
 });
 
 test('once the server confirms the hunt, its phase end wins', () => {

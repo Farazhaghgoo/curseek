@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { MAX_SPEED, PLAYER_RADIUS, TICK_MS, WALL_HALF } from '../src/shared/constants';
+import { MAX_SPEED, MAX_STEP, PLAYER_RADIUS, TICK_MS, WALL_HALF } from '../src/shared/constants';
 import { distSqPointSegment, type Vec } from '../src/shared/geometry';
 import { Maze } from '../src/shared/maze';
 import { mulberry32 } from '../src/shared/rng';
@@ -70,7 +70,7 @@ test('a bot hider runs away from a seeker it can see', () => {
   const brain = new BotBrain(mulberry32(5));
   const pos: Vec = maze.cellCenter(start);
   for (let i = 0; i < 90; i++) {
-    const want = brain.step({ maze, now: i * TICK_MS, role: 'hider', pos: { ...pos }, canMove: true, seen: [seekerPos], hint: null });
+    const want = brain.step({ maze, now: i * TICK_MS, role: 'hider', pos: { ...pos }, canMove: true, seen: [seekerPos], hint: null, items: [], maxStep: MAX_STEP });
     moveCircle(maze, pos, want.x, want.y);
   }
   const cellsAway = maze.distancesFrom(seekerCell)[maze.cellAt(pos.x, pos.y)];

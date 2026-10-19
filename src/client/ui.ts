@@ -14,6 +14,17 @@ export interface HudState {
   hiders: string;
 }
 
+/** An effect running on the local player, as shown in the HUD. */
+export interface EffectChip {
+  kind: string;
+  name: string;
+  curse: boolean;
+  /** Milliseconds left. */
+  left: number;
+  /** Fraction of its duration left, 0..1. */
+  frac: number;
+}
+
 export interface LobbyView {
   code: string;
   link: string;
@@ -58,6 +69,8 @@ export class Ui {
   private readonly landing = $('landing');
   private readonly lobby = $('lobby');
   private readonly hud = $('hud');
+  private readonly effects = $('effects');
+  private effectsKey = '';
   private readonly banner = $('banner');
   private readonly prompt = $('prompt');
   private readonly toasts = $('toasts');
@@ -107,6 +120,7 @@ export class Ui {
     this.lobby.hidden = true;
     this.leaveBtn.hidden = true;
     this.setHud(null);
+    this.setEffects([]);
     this.setBanner('');
     this.setPrompt(null);
     this.hideResult();
@@ -203,6 +217,33 @@ export class Ui {
     time.textContent = state.time;
     time.classList.toggle('low', state.lowTime);
     $('hud-hiders').textContent = state.hiders;
+  }
+
+  /** Shows the effects running on the local player, each with the time it has left. */
+  setEffects(chips: EffectChip[]): void {
+    const key = chips.map((c) => c.kind).join(',');
+    if (key !== this.effectsKey) {
+      this.effectsKey = key;
+      this.effects.replaceChildren(
+        ...chips.map((c) => {
+          const el = document.createElement('div');
+          el.className = c.curse ? 'chip curse' : 'chip';
+          const name = document.createElement('span');
+          name.textContent = c.name;
+          const secs = document.createElement('span');
+          secs.className = 'secs';
+          el.append(name, secs, document.createElement('i'));
+          return el;
+        }),
+      );
+    }
+    chips.forEach((c, i) => {
+      const el = this.effects.children[i] as HTMLElement;
+      const secs = el.children[1];
+      const text = `${Math.ceil(c.left / 1000)}s`;
+      if (secs.textContent !== text) secs.textContent = text;
+      el.style.setProperty('--frac', c.frac.toFixed(3));
+    });
   }
 
   setBanner(text: string): void {
